@@ -1,0 +1,119 @@
+---
+title: "CRT_baseline_period"
+author: "A.Amstutz"
+date: "2025-03-15"
+output:
+  html_document:
+    keep_md: yes
+    toc: yes
+    toc_float: yes
+    code_folding: hide
+  pdf_document:
+    toc: yes
+---
+
+## Parallel CRT with baseline period
+1. "A common enhancement of a simple parallel CRT is to add an assessment of participants’ outcomes in a baseline period (before randomisation). Even if different participants are assessed at baseline and follow-up [i.e. cross-sectional sampling], the fact that they are sampled from the same cluster allows some control for cluster differences." -> https://www.bmj.com/content/360/bmj.k1121
+2. This is illustratively shown in the sample size calculator: https://clusterrcts.shinyapps.io/rshinyapp/ (switch between "Parallel" and "Parallel with baseline measure") -> can yield a substantial increase in power! See last chapter below.
+
+Let's explore this further
+* The rationale: The more variability there is in the outcome across clusters, the more difficult to identify the effect.
+* On the example of an individual RCT: "if we are interested in measuring the impact of an intervention on the quality of life (QOL) across a diverse range of patients, the measurement (which typically ranges from 0 to 1) might vary considerably from person to person, regardless of the intervention. If the intervention has a real but moderate effect of, say, 0.1 points, it could easily get lost if the standard deviation is considerably larger, say 0.25."
+* If we collect baseline QOL scores and can “control” for those measurements in some way (by conducting a repeated measures analysis, using ANCOVA, or assessing the difference itself as an outcome), we might be able to reduce the variability and have better chance to pick up the effect. 
+
+Literature:
+* https://onlinelibrary.wiley.com/doi/abs/10.1002/sim.5352 
+* Hooper Richard et al. Sample size calculation for stepped wedge and other longitudinal cluster randomised trials. Statistics in Medicine. 2016: https://onlinelibrary.wiley.com/doi/10.1002/sim.7028 and 
+* Leyrat Clémence et al. Practical considerations for sample size calculation for cluster randomized trials. Journal of Epidemiology and Population Health. 2024: https://www.sciencedirect.com/science/article/pii/S2950433324000090
+* Based on: https://www.bmj.com/content/360/bmj.k1121.long
+
+## There are various ways to do it:
+1. Analysis of covariance (ANCOVA): Aggregate outcomes at baseline, and adjusts each individual participant at follow-up for the baseline cluster mean
+2. Constrained baseline analysis: Treat outcomes collected at baseline and follow-up as longitudinal, and to use a repeated measures analysis to estimate the effect of the intervention being switched on in one of the randomised groups on the second of these occasions, see design matrix in https://clusterrcts.shinyapps.io/rshinyapp/. Unlike a difference of differences analysis, it assumes that there is no systematic difference between the groups at baseline.
+
+## Simulation
+### Let's start with a simple individual randomized trial
+```{r message=FALSE, warning=FALSE}
+RNGkind("L'Ecuyer-CMRG")
+set.seed(19287)
+library(simstudy)
+library(ggplot2)
+library(lmerTest)
+library(parallel)
+library(data.table)
+library(pwr)
+library(gtsummary)
+library(paletteer)
+library(magrittr)
+```
+
+In this examples the overall variance is𝜎=64 (regardless of treatment group) and thus = individual-level𝜎=64 is the only source of variation. The overall effect size 𝛿, which is the difference in average QoL scores across treatment groups, is assumed to be 2.4, a standardized effect size 2.4/8=0.3, i.e., the treatment effect of 2.4 is about 0.3 standard deviations large (Cohen's d), which is a moderate effect size in typical clinical trials.
+Let's calculate the sample size for a two-sample t-test (2 groups, independent, only 1 measurement at the end) based on the effect size (Cohen's d) and a power of 80%.
+```{r}
+pwr.t.test(d = 0.3, power = 0.80)
+```
+We will need 350 participants (175 in each arm) to achieve a power of 80%.
+
+### Let's generate the data
+```{r}
+simple_rct <- function(N) {
+  
+  # data definition for outcome
+  
+  defS <- defData(varname = "rx", formula = "1;1", dist = "trtAssign") # treatment variable, 1:1 allocation, 50% prob to be in a or b
+  defS <- defData(defS, varname = "y", formula = "2.4*rx", variance = 64, dist = "normal") # outcome, continuous, 
+  # If rx = 1 (treatment group), the outcome will be 2.4*1 = 2.4.
+  # If rx = 0 (control group), the outcome will be 2.4*0 = 0.
+  # variance: spread or variability in the scores within each group.
+  # dist = "normal" indicates that the outcome variable (y) will follow a normal distribution.
+  # The outcome variable has a mean of 2.4 for the treatment group and 0 for the control group, with a variance of 64.
+  dd <- genData(N, defS)
+  
+  dd[]
+}
+
+dd <- simple_rct(350) # simulate the trial with 350 participants
+
+ggplot(dd, aes(x = factor(rx), y = y, fill = factor(rx))) + 
+  # Violin plot
+  geom_violin(trim = FALSE) + 
+  # Add the individual data points
+  geom_jitter(width = 0.15, size = 1, alpha = 0.6, color = "black") +
+  # Add a point estimate (median)
+  stat_summary(fun = "median", geom = "point", shape = 18, size = 3, color = "red") +
+  # Boxplot to show interquartile range (optional, can be removed if not needed)
+  geom_boxplot(width = 0.1, alpha = 0.5, outlier.shape = NA, color = "black") +
+  labs(x = "Treatment Group (rx)", y = "Outcome (y)") +
+  scale_fill_manual(values = c("skyblue", "salmon")) + 
+  theme_minimal() +
+  theme(legend.title = element_blank()) +
+  ggtitle("Violin Plots with Point Estimate and Individual Data Points")
+
+```
+
+### Let's estimate the effect size
+A simple linear regression model will do
+```{r}
+fit1 <- lm(y ~ rx, data = dd)
+tbl_regression(fit1) %>% 
+  modify_footnote(ci ~ NA, abbreviation = TRUE)
+```
+
+### Let's confirm the power
+We can confirm the power by repeatedly generating data sets and fitting models, recording the p-values for each replication.
+```{r}
+replicate <- function() {
+  dd <- simple_rct(350)
+  fit1 <- lm(y ~  rx, data = dd)
+  coef(summary(fit1))["rx", "Pr(>|t|)"]
+}
+
+p_values <- mclapply(1:1000, function(x) replicate(), mc.cores = 4) # mclapply() is a parallelized version of the lapply() function that applies the replicate() function 1000 times. mc.cores = 4 means the code will use 4 cores for parallel computation, which speeds up the process by running multiple replications simultaneously.
+
+# Estimated power based on 1000 replications.
+# Convert the list of p-values into a vector and calculates the proportion of replications where the p-value is less than 0.05
+mean(unlist(p_values) < 0.05)
+```
+
+
+
