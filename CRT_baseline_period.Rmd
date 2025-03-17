@@ -31,7 +31,7 @@ Literature:
 1. Analysis of covariance (ANCOVA): Aggregate outcomes at baseline, and adjusts each individual participant at follow-up for the baseline cluster mean
 2. Constrained baseline analysis: Treat outcomes collected at baseline and follow-up as longitudinal, and to use a repeated measures analysis to estimate the effect of the intervention being switched on in one of the randomised groups on the second of these occasions, see design matrix in https://clusterrcts.shinyapps.io/rshinyapp/. Unlike a difference of differences analysis, it assumes that there is no systematic difference between the groups at baseline.
 
-## Simulation
+## Simulation | Continuous outcome
 ### First, start with a simple individual randomized trial
 ```{r message=FALSE, warning=FALSE}
 RNGkind("L'Ecuyer-CMRG")
@@ -523,5 +523,191 @@ p_values <- mclapply(1:50, function(x) replicate(), mc.cores = 4) # increase onc
 mean(unlist(p_values) < 0.05)
 ## [1] 0.79
 ```
+
+#### Repeated Measurements - ANCOVA Model
+We may be able to reduce the number of clusters even further by changing the model so that we are comparing follow-up outcomes of the two treatment arms (as opposed to measuring the differences in changes as we just did). This model is
+
+𝑌𝑖𝑗1 = 𝛼0 + 𝛾𝑌𝑖𝑗0 + 𝛿𝑍𝑗 + 𝑐𝑗 + 𝑠𝑖𝑗
+
+𝑌𝑖𝑗0: Baseline outcome for the same individual
+𝛾 = Adjustment coefficient for baseline values (typically close to 1 if baseline and follow-up outcomes are highly correlated).
+𝑍𝑗: Treatment assignment (0 = control, 1 = intervention). 
+𝛿:Treatment effect of interest.
+𝑐𝑗: Cluster-level random effect.
+𝑠𝑖𝑗: Subject-level random effect.
+
+
+Even though the estimation model has changed, I am using the exact same data generation process as before, with the same effect size and variance assumptions:
+```{r}
+dd <- crt_base(effect = 2.4, nsites = 200, n = 100, 
+  s_c = 6.8, s_cp = 2.8, s_s = 38, s_sp = 16.4)
+
+dobs <- dd[, .(site, rx, id, period, timeID, y)]
+dobs <- dcast(dobs, site + rx + id ~ period, value.var = "y")
+
+fit5 <- lmer(`1` ~ `0` + rx + (1 | site), data = dobs)
+tbl_regression(fit5, tidy_fun = broom.mixed::tidy)  %>% 
+  modify_footnote(ci ~ NA, abbreviation = TRUE)
+```
+
+#### Let's update the Design Effect
+Teerenstra et al derived an alternative design effect that is specific to the ANCOVA model:
+
+(1+(𝑛−1)𝜌)(1−𝑟2)
+
+where 𝑟 is the same as before. Since (1−𝑟2) < 2(1−𝑟), 0≤𝑟<1, this will be a reduction from the earlier model.
+```{r}
+(des_effect <- (1 + (n - 1) * rho) * (1 - r^2))
+## [1] 2.7
+des_effect * 350 / n
+## [1] 31
+```
+
+#### Let's confirm the power
+```{r}
+replicate <- function() {
+  
+  dd <- crt_base(2.4, 32, 30, s_c = 6.8, s_cp = 2.8, s_s = 38, s_sp = 16.4)
+  dobs <- dd[, .(site, rx, id, period, timeID, y)]
+  dobs <- dcast(dobs, site + rx + id ~ period, value.var = "y")
+
+  fit5 <- lmer(`1` ~ `0` + rx + (1 | site), data = dobs)
+  coef(summary(fit5))["rx", "Pr(>|t|)"]
+}
+
+p_values <- mclapply(1:1000, function(x) replicate(), mc.cores = 4)
+
+mean(unlist(p_values) < 0.05)
+## [1] 0.78
+```
+
+
+## Simulation | Binary outcome
+### First, start with a simple individual randomized trial
+```{r}
+
+```
+
+#### Let's generate the data
+```{r}
+
+```
+
+#### Let's estimate the effect size
+```{r}
+
+```
+
+#### Let's confirm the power
+
+### Second, now move to a cluster randomized trial, but same context
+#### Let's generate the data
+Use a logistic model: Instead of y being normally distributed, we model the log-odds (logit) of success.
+Convert the linear predictor into a probability: Use the inverse logit (logistic function):
+P(Y ij = 1) = e ηij / 1 + e ηij
+ηij = cj + β⋅rxj
+Simulate binary outcomes: Draw y from a Bernoulli distribution based on the computed probabilities.
+
+Since you’ve estimated an intraclass correlation coefficient (ICC) of 0.10 for PrEP uptake, we can now determine reasonable variance parameters for your binary outcome model.
+In logistic models, the ICC is the proportion of total variance explained by between-site variation (i.e., clustering).
+
+ICC = Between-site variance / Total variance
+
+The total variance in a logistic model is fixed at π^2 / 3 = 3.29 for the residual level (individual variation).
+The between-site variance (σ^2c) is what we need to determine.
+
+The ICC formula for a logistic model is:
+
+ICC = σ^2c / σ^2c + (π^2 / 3 )
+
+So, a reasonable site-level variance for your binary outcome is about 0.365.
+
+If there’s additional within-site variation over time, we include σ^2cp.
+Typically, this is a fraction of σ^2c, e.g., half the site-level variance, 0.183.
+
+
+Let’s assume the control group has a baseline PrEP uptake of 40% (p0=0.40). The treatment group increases this by 20 percentage points to p1=0.60.
+OR = (0.60 / (1−0.60)) / (0.40 / (1−0.40)) = 1.5 / 0.6667 = 2.25
+δ1=log(2.25) ≈ 0.81
+So, instead of 2.4 * rx, we should use 0.81 * rx in the model.
+
+```{r}
+simple_crt_binary <- function(nsites, n) {
+  # Treatment assignment (1:1 randomization)
+  defC <- defData(varname = "rx", formula = "1;1", dist = "trtAssign")
+  
+  # Define Site-Level Random Effect (c) with variance = 0.365
+  defC <- defData(defC, varname = "c", formula = "0", variance = 0.365, dist = "normal")
+  
+  # Define Individual-Level Outcome (logit model)
+  # Treatment effect is log(OR) = 0.81 (as explained before)
+  defS <- defDataAdd(varname = "y", 
+                     formula = "c + 0.81 * rx", 
+                     dist = "binary", link = "logit")
+
+  # Generate site-level data
+  dc <- genData(nsites, defC, id = "site")
+  
+  # Generate individual-level data (n participants per site)
+  dd <- genCluster(dc, "site", n, "id")
+  dd <- addColumns(defS, dd)
+  
+  return(dd)
+}
+
+# Generate data for 20 sites, each with 50 individuals
+dd_binary <- simple_crt_binary(20, 50)
+
+# Create violin plot with sites on x-axis and colors for treatment/control
+ggplot(dd_binary, aes(x = factor(site), y = y, fill = factor(rx))) +
+  geom_violin(trim = FALSE, alpha = 0.5) +  # Violin plot with transparency
+  geom_jitter(shape = 16, position = position_jitter(0.2), alpha = 0.4, size = 2) +  # Scatter individual points
+  scale_fill_manual(values = c("blue", "red"), labels = c("Control", "Treatment")) +
+  labs(x = "Site (Cluster)", y = "Outcome (y)", title = "Binary Outcome Distribution by Site") +
+  theme_minimal() +
+  theme(legend.title = element_blank(), axis.text.x = element_text(angle = 90, hjust = 1))
+
+```
+
+#### Let's estimate the effect size
+A logistic mixed effects model with random intercept is used to estimate the effect size.
+```{r}
+dd_binary <- simple_crt_binary(200,100)
+
+# Fit a logistic mixed-effects model with random intercepts for site
+fit_logistic <- glmer(y ~ rx + (1 | site), data = dd_binary, family = binomial)
+
+tbl_regression(fit_logistic, tidy_fun = broom.mixed::tidy)  %>% 
+  modify_footnote(ci ~ NA, abbreviation = TRUE)
+```
+
+#### Let's confirm the power
+Confirm power and go back to the initial assumption of 64 sites with 30 participants per site, which is a massive increase from total sample size 350 (individual RCT) to 1920 in a simple CRT
+```{r}
+replicate <- function() {
+  dd_binary <- simple_crt_binary(30,10)
+  fit_logistic <- glmer(y ~ rx + (1 | site), data = dd_binary, family = binomial)
+  
+  coef(summary(fit_logistic))["rx", "Pr(>|z|)"]
+}
+
+p_values <- mclapply(1:100, function(x) replicate(), mc.cores = 4)
+
+mean(unlist(p_values) < 0.05)
+
+p_values <- unlist(p_values)  # Convert list to vector
+
+# Create histogram
+ggplot(data.frame(p_values), aes(x = p_values)) +
+  geom_histogram(binwidth = 0.05, fill = "blue", color = "black", alpha = 0.7) +
+  geom_vline(xintercept = 0.05, linetype = "dashed", color = "red", linewidth = 1) +
+  labs(title = "Distribution of p-values from xxx Simulations",
+       x = "p-value",
+       y = "Frequency") +
+  theme_minimal()
+
+```
+
+
 
 
