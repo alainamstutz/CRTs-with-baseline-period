@@ -45,6 +45,7 @@ library(pwr)
 library(gtsummary)
 library(paletteer)
 library(magrittr)
+library(dplyr)
 ```
 
 In this examples the overall variance is𝜎= 64 (regardless of treatment group) and thus here, the individual-level𝜎= 64 is the only source of variation. The overall effect size 𝛿, which is the difference in average QoL scores across treatment groups, is assumed to be 2.4, a standardized effect size 2.4/8=0.3, i.e., the treatment effect of 2.4 is about 0.3 standard deviations large (Cohen's d), which is a moderate effect size in typical clinical trials.
@@ -584,23 +585,119 @@ mean(unlist(p_values) < 0.05)
 
 ## Simulation | Binary outcome
 ### First, start with a simple individual randomized trial
+Requirements:
+power: 80%
+alpha: 5%
+Baseline uptake PrEP: 30% (see survey data)
+Increase in uptake through intervention: 10%
+
 ```{r}
+# First, calculate the sample size for this individual RCT, using pwr, two-sided (effect could go either way)
+alpha <- 0.05 # alpha level
+power <- 0.80 # power
+p_cont <- 0.30 # Proportion of outcome in the control group
+p_int <- 0.40 # Proportion of outcome in the intervention group
+
+power.prop.test(p1 = p_cont, p2 = p_int, power = power, sig.level = alpha)
+ss_ind_1arm <- pwr.2p.test(h = ES.h(p_int, p_cont), 
+                           sig.level = alpha, 
+                           power = power)
+ss_ind <- ss_ind_1arm$n * 2
+cat("Total sample size individual RCT, pwr:", round(ss_ind, 0))
+
+## As a comparison, use "manual" formula instead of pwr package
+Z_alpha_half <- qnorm(1 - alpha / 2) # translate into Z-distribution -> equals 0.975 (95% CI)
+Z_beta <- qnorm(power)
+ss_ind_1arm_man <- ((Z_alpha_half + Z_beta)^2 * (p_int * (1 - p_int) + p_cont * (1 - p_cont))) / (p_int - p_cont)^2
+
+ss_ind_man <- ss_ind_1arm_man * 2
+# cat("Total sample size individual RCT, manual:", ss_ind_man) # total sample size
+# => very similar result, use pwr result going forward
+
+cat("Total sample size individual RCT, manual:", round(ss_ind_man, 0))
 
 ```
 
 #### Let's generate the data
 ```{r}
+simple_rct_binary_probs <- function(N, p0, p1) {
+  
+  # Step 1: Assign treatment randomly (1:1 allocation)
+  defS <- defData(varname = "rx", formula = "1;1", dist = "trtAssign")
+  dd <- genData(N, defS)
+  
+  # Step 2: Assign binary outcome (success/failure) for each group using Bernoulli distribution
+  # Control group (rx == 0)
+  dd[rx == 0, y := rbinom(sum(rx == 0), 1, p0)]
+  # Treatment group (rx == 1)
+  dd[rx == 1, y := rbinom(sum(rx == 1), 1, p1)]
+  
+  return(dd)
+}
 
+# Generate data
+dd_binary <- simple_rct_binary_probs(1000, p0 = 0.3, p1 = 0.4)
+
+# Check the proportions
+prop_control <- mean(dd_binary$y[dd_binary$rx == 0])  
+prop_treatment <- mean(dd_binary$y[dd_binary$rx == 1])
+
+cat("Observed control success rate:", prop_control, "\n")
+cat("Observed treatment success rate:", prop_treatment, "\n")
+
+# Visualizing Binary Outcome Distribution
+ggplot(dd_binary, aes(x = factor(rx), fill = factor(y))) + 
+  geom_bar(position = "fill", color = "black") +  # Stacked bar plot showing proportion of successes (y=1)
+  scale_fill_manual(values = c("gray", "blue"), labels = c("No PrEP", "PrEP Uptake")) +
+  labs(x = "Treatment Group", y = "Proportion", fill = "Outcome") +
+  theme_minimal() +
+  ggtitle("Proportion of PrEP Uptake by Treatment Group")
 ```
 
 #### Let's estimate the effect size
 ```{r}
+fit_logit <- glm(y ~ rx, data = dd_binary, family = binomial)
+tbl_regression(fit_logit) %>% 
+  modify_footnote(ci ~ NA, abbreviation = TRUE)
+
+# Get the exp coefficient (i.e. OR) and exp confidence intervals
+# coef_summary <- exp(summary(fit_logit)$coefficients)
 
 ```
 
 #### Let's confirm the power
+```{r}
+replicate <- function() {
+  dd_binary <- simple_rct_binary_probs(710, p0 = 0.3, p1 = 0.4)
+  fit_logit <- glm(y ~ rx, data = dd_binary, family = binomial)
+  
+  coef(summary(fit_logit))["rx", "Pr(>|z|)"]
+}
+
+p_values <- mclapply(1:1000, function(x) replicate(), mc.cores = 4)
+
+# Estimated power based on 1000 replications.
+mean(unlist(p_values) < 0.05)
+```
 
 ### Second, now move to a cluster randomized trial, but same context
+#### Sample size calculation
+ICC: 0.15 (this is rather conservative, according to guidance from CDC guidance re ICC for PrEP uptake as outcome [https://www.cdc.gov/hiv/pdf/research/interventionresearch/compendium/prep/PrEP_Chapter_EBI_Criteria.pdf] and see data from SEARCH [https://www.ncbi.nlm.nih.gov/pmc/articles/PMC9169331/], and realistic for a behavioral intervention)
+Cluster size: 50
+Since individuals in the same cluster are correlated, we need to adjust the sample size using the design effect.
+Design Effect = 1+(n−1)ρ; where, n=50 (number of individuals per site), ρ = 0.15
+=> Design effect = 8.35
+```{r}
+cluster_size <- 50  # Average cluster size, i.e. participants per cluster
+icc <- 0.15
+deff_c <- 1 + (cluster_size - 1) * icc # design effect due to cluster randomization
+
+ss_crt_standard <- ss_ind * deff_c
+cat("Total sample size CRT, standard:", ss_crt_standard) # total sample size for a standard CRT
+n_clus_crt_standard <- ss_crt_standard / cluster_size
+cat("Total N clusters CRT, standard:", n_clus_crt_standard) # total number of clusters for a standard CRT (divide by arm or sequence/steps if SWCRT)
+```
+
 #### Let's generate the data
 Use a logistic model: Instead of y being normally distributed, we model the log-odds (logit) of success.
 Convert the linear predictor into a probability: Use the inverse logit (logistic function):
@@ -618,33 +715,35 @@ The between-site variance (σ^2c) is what we need to determine.
 
 The ICC formula for a logistic model is:
 
-ICC = σ^2c / σ^2c + (π^2 / 3 )
-
-So, a reasonable site-level variance for your binary outcome is about 0.365.
+ICC = σ^2c / σ^2c + (π^2 / 3)
 
 If there’s additional within-site variation over time, we include σ^2cp.
-Typically, this is a fraction of σ^2c, e.g., half the site-level variance, 0.183.
 
-
-Let’s assume the control group has a baseline PrEP uptake of 40% (p0=0.40). The treatment group increases this by 20 percentage points to p1=0.60.
-OR = (0.60 / (1−0.60)) / (0.40 / (1−0.40)) = 1.5 / 0.6667 = 2.25
-δ1=log(2.25) ≈ 0.81
-So, instead of 2.4 * rx, we should use 0.81 * rx in the model.
-
+Typically, this is a fraction of σ^2c, e.g., half the site-level variance.
 ```{r}
-simple_crt_binary <- function(nsites, n) {
+simple_crt_binary <- function(nsites, n, p_cont, p_int, ICC) {
+  # Convert the proportions to log-odds
+  logit_cont <- log(p_cont / (1 - p_cont))  # Log-odds for control group
+  logit_int <- log(p_int / (1 - p_int))    # Log-odds for intervention group
+  
+  # Calculate the treatment effect (log-odds difference)
+  log_OR <- logit_int - logit_cont  # Difference in log-odds
+  
+  # Calculate the between-cluster variance (σ^2c) from ICC
+  sigma2_c <- ICC * (pi^2 / 3) / (1 - ICC)  # Between-site variance
+  cat("Between-site variance (σ^2c):", sigma2_c, "\n")
+  
   # Treatment assignment (1:1 randomization)
   defC <- defData(varname = "rx", formula = "1;1", dist = "trtAssign")
   
-  # Define Site-Level Random Effect (c) with variance = 0.365
-  defC <- defData(defC, varname = "c", formula = "0", variance = 0.365, dist = "normal")
+  # Define Site-Level Random Effect (c) with variance σ^2c
+  defC <- defData(defC, varname = "c", formula = "0", variance = sigma2_c, dist = "normal")
   
   # Define Individual-Level Outcome (logit model)
-  # Treatment effect is log(OR) = 0.81 (as explained before)
   defS <- defDataAdd(varname = "y", 
-                     formula = "c + 0.81 * rx", 
+                     formula = paste0("c + ", logit_cont, " + ", log_OR, " * rx"), 
                      dist = "binary", link = "logit")
-
+  
   # Generate site-level data
   dc <- genData(nsites, defC, id = "site")
   
@@ -655,8 +754,23 @@ simple_crt_binary <- function(nsites, n) {
   return(dd)
 }
 
-# Generate data for 20 sites, each with 50 individuals
-dd_binary <- simple_crt_binary(20, 50)
+# Example: Simulating the data
+p_cont <- 0.30  # Proportion of outcome in the control group
+p_int <- 0.40   # Proportion of outcome in the intervention group
+ICC <- 0.15     # Intraclass correlation coefficient (low ICC)
+n <- 50          # Number of participants per site
+nsites <- 118    # Number of sites (clusters)
+
+# Simulate the data
+dd_binary <- simple_crt_binary(nsites = nsites, n = n, p_cont = p_cont, p_int = p_int, ICC = ICC)
+
+# Calculate the success rate for each treatment group
+dd_binary_summary <- dd_binary %>%
+  group_by(rx) %>%
+  summarise(success_rate = mean(y))
+
+# View the summary
+print(dd_binary_summary)
 
 # Create violin plot with sites on x-axis and colors for treatment/control
 ggplot(dd_binary, aes(x = factor(site), y = y, fill = factor(rx))) +
@@ -667,25 +781,55 @@ ggplot(dd_binary, aes(x = factor(site), y = y, fill = factor(rx))) +
   theme_minimal() +
   theme(legend.title = element_blank(), axis.text.x = element_text(angle = 90, hjust = 1))
 
+# Check the distribution of treatment and control groups within each site
+addmargins(table(dd_binary$rx, dd_binary$site))
+
+# Define probabilities
+p_cont <- 0.30  # Proportion of outcome in the control group
+p_int <- 0.40   # Proportion of outcome in the intervention group
+
+# Calculate log-odds for control and intervention groups
+logit_cont <- log(p_cont / (1 - p_cont))  # Log-odds for control group
+logit_int <- log(p_int / (1 - p_int))    # Log-odds for intervention group
+
+# Calculate the treatment effect as the difference in log-odds
+log_OR <- logit_int - logit_cont  # Difference in log-odds (treatment effect)
+
+# Calculate the odds ratio (OR)
+OR <- (p_int / (1 - p_int)) / (p_cont / (1 - p_cont))  # Odds ratio
+
+# Calculate the log of the odds ratio (log-OR)
+log_OR_from_OR <- log(OR)  # Log of odds ratio
+
+# Print the results
+cat("Log-odds for Control Group:", logit_cont, "\n")
+cat("Log-odds for Intervention Group:", logit_int, "\n")
+cat("Treatment Effect (Log-Odds Difference):", log_OR, "\n")
+cat("Odds Ratio (OR):", OR, "\n")
+cat("Log-Odds Ratio (log(OR)):", log_OR_from_OR, "\n") # same as treatment effect, but both on log
+
 ```
 
 #### Let's estimate the effect size
 A logistic mixed effects model with random intercept is used to estimate the effect size.
 ```{r}
-dd_binary <- simple_crt_binary(200,100)
+dd_binary <- simple_crt_binary(nsites = nsites, n = n, p_cont = p_cont, p_int = p_int, ICC = ICC)
 
 # Fit a logistic mixed-effects model with random intercepts for site
 fit_logistic <- glmer(y ~ rx + (1 | site), data = dd_binary, family = binomial)
 
 tbl_regression(fit_logistic, tidy_fun = broom.mixed::tidy)  %>% 
   modify_footnote(ci ~ NA, abbreviation = TRUE)
+
+# Get the exp coefficient (i.e. OR) and exp confidence intervals
+coef_summary <- exp(summary(fit_logistic)$coefficients)
+
 ```
 
 #### Let's confirm the power
-Confirm power and go back to the initial assumption of 64 sites with 30 participants per site, which is a massive increase from total sample size 350 (individual RCT) to 1920 in a simple CRT
 ```{r}
 replicate <- function() {
-  dd_binary <- simple_crt_binary(30,10)
+  dd_binary <- simple_crt_binary(nsites = nsites, n = n, p_cont = p_cont, p_int = p_int, ICC = ICC)
   fit_logistic <- glmer(y ~ rx + (1 | site), data = dd_binary, family = binomial)
   
   coef(summary(fit_logistic))["rx", "Pr(>|z|)"]
