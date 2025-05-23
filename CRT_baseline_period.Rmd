@@ -85,12 +85,12 @@ ggplot(dd, aes(x = factor(rx), y = y, fill = factor(rx))) +
 
 #### Let's estimate the effect size
 A simple linear regression model will do
-```{r}
+```{r message=FALSE, warning=FALSE}
 fit1 <- lm(y ~ rx, data = dd)
-tbl_regression(fit1)
-
-# %>% 
-#   modify_footnote(ci ~ NA, abbreviation = TRUE)
+tbl <- tbl_regression(fit1) %>%
+  modify_footnote(ci ~ NA, abbreviation = TRUE)
+# Render it as a markdown/kable table
+as_kable(tbl)
 ```
 
 #### Let's confirm the power
