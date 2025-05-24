@@ -1,7 +1,7 @@
 ---
 title: "CRT_baseline_period"
 author: "A.Amstutz"
-date: "2025-03-15"
+date: "2025-05-23"
 output:
   html_document:
     keep_md: yes
@@ -12,7 +12,7 @@ output:
     toc: yes
 ---
 
-## Parallel CRT with baseline period
+## Parallel CRT with baseline period or baseline adjustment
 1. "A common enhancement of a simple parallel CRT is to add an assessment of participants’ outcomes in a baseline period (before randomisation). Even if different participants are assessed at baseline and follow-up [i.e. cross-sectional sampling], the fact that they are sampled from the same cluster allows some control for cluster differences." -> https://www.bmj.com/content/360/bmj.k1121
 2. This is illustratively shown in the sample size calculator: https://clusterrcts.shinyapps.io/rshinyapp/ (switch between "Parallel" and "Parallel with baseline measure") -> can yield a substantial increase in power! See last chapter below.
 
@@ -27,7 +27,7 @@ Literature:
 * Leyrat Clémence et al. Practical considerations for sample size calculation for cluster randomized trials. Journal of Epidemiology and Population Health. 2024: https://www.sciencedirect.com/science/article/pii/S2950433324000090
 * Based on "Analysis of cluster randomised trials with an assessment of outcome at baseline": https://www.bmj.com/content/360/bmj.k1121.long
 
-## There are various ways to do it:
+There are various ways to do it:
 1. Analysis of covariance (ANCOVA): Aggregate outcomes at baseline, and adjusts each individual participant at follow-up for the baseline cluster mean
 2. Constrained baseline analysis: Treat outcomes collected at baseline and follow-up as longitudinal, and to use a repeated measures analysis to estimate the effect of the intervention being switched on in one of the randomised groups on the second of these occasions, see design matrix in https://clusterrcts.shinyapps.io/rshinyapp/. Unlike a difference of differences analysis, it assumes that there is no systematic difference between the groups at baseline. Similar to a one-period short stepped-wedge CRT.
 
@@ -109,7 +109,6 @@ A simple linear regression model will do
 fit1 <- lm(y ~ rx, data = dd)
 tbl <- tbl_regression(fit1) %>%
   modify_footnote(ci ~ NA, abbreviation = TRUE)
-# Render it as a markdown/kable table
 as_kable(tbl)
 ```
 
@@ -143,8 +142,6 @@ replicate <- function() {
 
 # Estimated power based on 1000 replications.
 p_values <- mclapply(1:1000, function(x) replicate(), mc.cores = 8) # I have max. 8 cores for parallel computation
-
-# Calculate the proportion of replications where the p-value is less than 0.05
 mean(unlist(p_values) < 0.05)
 ```
 
@@ -156,25 +153,38 @@ mean(unlist(p_values) < 0.05)
 If we have a pre-specified number of participants at each site (i.e. no cluster variation), usually we simply figure out a design effect for clustering to multiply with the calculated individual RCT sample size.
 
 The usual: DEFF = 1 + (n − 1) x ICC, whereby n = cluster size
+
 If there is cluster variation, the usual (conservative?) recommendation is: DEFF_cv = 1 + (n x (1 + CV^2) - 1) x ICC, whereby CV is the coefficient of variation (ratio of standard deviation of cluster sizes to mean of cluster sizes), see here: https://pmc.ncbi.nlm.nih.gov/articles/PMC7394950/#sup1
 
 If the ICC (intracluster correlation coefficient, i.e. how correlated participants are within the same cluster in terms of the outcome in question) is higher, then design effect higher => more clusters needed.
 
 In other words: 
 Yij = a + bZj + cj + si, where:
+
 Yij is a continuous outcome for participant i in site j,
+
 Zj is the treatment for site j,
+
 b the treatment effect,
+
 cj ~ N(0, σ^2 c) is the site level effect
+
 si ~ N(0, σ^2 s) is the individual-level effect
 
+
 The correlation of any two participants in a cluster is the ICC or rho = σ^2_c / (σ^2_c + σ^2_s)
+
 If ICC/rho is close to 0, most of the variability is at the individual level.
+
 If ICC/rho is close to 1, most of the variability is at the site level.
 
+
 We assume an ICC/rho of 0.15, i.e., 15% of the total variance in the outcome is attributable to between-site variability, while the remaining 85% is due to individual-level variability within sites, leading to:
+
 σ^2_c = 9.6
+
 σ^2_s = 54.4
+
 
 Using the formula above, assuming an ICC/rho of 0.15 and fixed 30 participants per site:
 
@@ -300,28 +310,45 @@ ggplot(data.frame(p_values), aes(x = p_values)) +
 
 ### Third, we move to a CRT with baseline period
 The baseline and follow-up measurements can be collected from the same participants (cohort design) or different participants (cross-sectional design), though the impact on the design effect depends on what approach is taken.
+
 The key idea is to measure the same outcome at two different time points to reduce variance and improve statistical power.
 
 In other words: 
 Yijk = a0 + a1k + b0Zj + b1kZj + cj + cpjk + sij + spijk, where:
 
 Yijk is a continuous outcome for participant i in site j and measurement/timepoint k (k=0 for baseline and k=1 for follow-up)
+
 Zj is the treatment for site j
+
 a0 is the mean outcome at baseline for participants in the control clusters
+
 a1 is the change from baseline to follow-up in the control arm (i.e. longitudinal change without intervention)
+
 b0 is the difference at baseline between control and treatment (we expect this to be 0 in a randomized trial)  
+
 b1 is the difference at follow-up, i.e. treatment effect
+
 The model has cluster-specific and individual-specific random effects. For both, there can be time-invariant effects and time-varying effects.
+
 Cluster-level effects (between-site variation):
+
 cj ~ N(0, σ^2 c) are time invariant site-specific effects, intrinsic differences between clusters.
+
 cpjk ~ N(0, σ^2 c p) are the site-specific period (time varying) effects. Changes over time within a site.
+
 Individual-level effects (within-site variation):
+
 sij ~ N(0, σ^2_s) are time invariant individual-level effects, stable individual characteristics.
+
 spijk ~ N(0, σ^2_s_p) are the individual-level period (time varying) effects, measurement error or individual change over time.
 
+
 Since each individual (or site) has two measurements, we can control for their baseline score when estimating the treatment effect.
+
 This reduces residual variance, leading to a lower design effect.
+
 The benefit depends on the ICC and how much baseline values predict follow-up values.
+
 
 #### Let's generate the data
 
@@ -380,21 +407,32 @@ crt_base <- function(effect, nsites, n, s_c, s_cp, s_s, s_sp) {
 Design effect for this kind of set-up was derived here: https://onlinelibrary.wiley.com/doi/full/10.1002/sim.5352 
 
 In order to estimate the design effect, we need two more correlations. 
+
 First, the correlation between baseline and follow-up random effects at the cluster level:
+
 rho_c = σ^2_c / (σ^2_c + σ^2_c_p)
+
 Second, the correlation between baseline and follow-up random effects at the individual level:
+
 rho_s = σ^2_s / (σ^2_s + σ^2_s_p)
+
 The overall correlation of two participant measurements in the same cluster and same time period (= ICC = rho):
+
 rho = (σ^2_c + σ^2_c_p) / (σ^2_c + σ^2_c_p + σ^2_s + σ^2_s_p)
 
 So, the overall correlation from baseline to follow-up if the same individual, accounting for all correlations is "r":
+
 r = (n * rho * rho_c + (1-rho) * rho_s) / (1 + (n-1) * rho)
 
 The design effect can be then be defined as follows (slightly adapted from before without baseline measure):
+
 DEFF = (1 + (n -1) * ICC) * (2 * (1 − r))
 
 The first part of the formula is the usual clustering inflation.
-The second part of the formula adjusts for the reduction in variance due to the inclusion of baseline measurements in the analysis. The value of rho reflects how strongly the baseline and follow-up measurements correlate at both the cluster and individual levels.
+The second part of the formula adjusts for the reduction in variance due to the inclusion of baseline measurements in the analysis.
+
+The value of rho reflects how strongly the baseline and follow-up measurements correlate at both the cluster and individual levels.
+
 If the correlation between baseline and follow-up measurements is strong (i.e., high ps and high pc), this part of the formula will be closer to 0 => a lower design effect (and thus a lower required sample size).
 
 By collecting baseline measurements, the baseline-to-follow-up correlation reduces the variability in the outcome variable, which allows for more precise estimates of the treatment effect and smaller sample size requirements.
@@ -402,17 +440,25 @@ By collecting baseline measurements, the baseline-to-follow-up correlation reduc
 
 #### Cross-section cohort design
 If we collect baseline and follow-up from different cohorts (often done in large-scale CRTs with random sampling before/after)
+
 One measurement at baseline before the intervention is implemented, and one measurement from a different random sample in a second period. In this case, σ^2_s is 0 and ps is 0, so the model reduces to:
 
 Yijk = a0 + a1k + b0Zj + b1kZj + cj + cpjk + spijk
 
 The parameters for this simulation are:
+
 b1 = 2.4 (treatment effect, as defined)
+
 ICC = 0.15, as defined above
+
 σ^2_s_p = 54.4, as defined above (with σ^2_s = 0)
+
 σ^2_c = 6.8 (Cluster-level variance) by assuming that 70% of the between-cluster variance (=9.6, see above) is time-invariant (often assumed for psychological traits or stable health scores)
+
 σ^2_c_p = 2.8 (Cluster-level period variance)
+
 Total variance: σ^2_c + σ^2_c_p + σ^2_s_p = 6.8 + 2.8 + 54.4 = 64
+
 
 
 ```r
@@ -449,9 +495,13 @@ lmer(y ~ period * rx + (1|timeID:site) + (1|site), data = dd)
 a0 + a1k -> Fixed Effects period * rx, which captures the difference between baseline and follow-up, and if the site received treatment or not => the interaction term captures how the treatment effect differs between baseline and follow-up and represents thus the treatment effect b1.
 
 Random Effects:
+
 σ^2_c_p = s_cp = cpjk = (1|timeID:site): A random intercept for each site in each time period (baseline and follow-up). This accounts for the site-specific change/variability over time.
+
 σ^2_c = s_c = cj = (1|site): A random intercept for each site.
+
 σ^2_s_p = s_sp = spijk: Since it's cross-sectional, there's no need for person-specific intercepts (sij) and we thus exclude any individual random effects in the model
+
 
 ```r
 dd <- crt_base(effect = 2.4, nsites = 200, n = 100, s_c=6.8, s_cp=2.8, s_s=0, s_sp=54.4)
@@ -544,8 +594,11 @@ des_effect * 350 / n
 ## [1] 50.45833
 ```
 We reduced the design effect from 5.35 to 4.3 
+
 => New Total Sample Size: 350 x 4.3 = 1514 participants across ca. 52 sites
+
 Instead of 350 x 5.35 = 1872 participants across ca. 64 sites
+
 
 #### Let's confirm the power
 
@@ -571,13 +624,21 @@ According to the logic, we can reduce further if we measure a single cohort twic
 Yijk = a0 + a1k + b0Zj + b1kZj + cj + cpjk + sij + spijk
 
 #### Let's generate the data
+
 The parameters for this simulation are:
+
 b1 = 2.4 (treatment effect, as defined)
+
 ICC = 0.15, as defined above
+
 σ^2_c = 6.8 (Cluster-level variance) by assuming that 70% of the between-cluster variance (9.6, see above) is time-invariant/persistent 
+
 σ^2_c_p = 2.8 (Cluster-level period variance)
+
 σ^2_s = 38 (Individual-level variance) by assuming that 70% of individual variance is persistent
+
 σ^2_s_p = 16.4 (Individual-level period variance) 
+
 
 ```r
 dd <- crt_base(effect=2.4, nsites=20, n=30, s_c=6.8, s_cp=2.8, s_s=38, s_sp=16.4)
@@ -705,9 +766,13 @@ des_effect * 350 / n
 ## [1] 36.60417
 ```
 We reduced the design effect from 5.35 to 4.3 to 3.14
+
 => New Total Sample Size: 350 x 3.14 = 1099 participants across ca. 38 sites
+
 Instead of 350 x 4.3 = 1514 participants across ca. 52 sites when baseline period with cross-sectional
+
 Instead of 350 x 5.35 = 1872 participants across ca. 64 sites when no baseline period at all
+
 
 #### Let's confirm the power
 
@@ -730,8 +795,11 @@ mean(unlist(p_values) < 0.05)
 #### Repeated Measurements - ANCOVA Model
 We are able to reduce the number of clusters even further by changing the model so that we are comparing follow-up outcomes of the two treatment arms (as opposed to measuring the differences in changes as we just did). I.e. the usual "baseline-adjusted" model in trials:
 
+
 Yij(k=1) = a0 + yYij(k=0) + bZj + cj + sij, where
+
 yYij(k=0): Adjustment coefficient of baseline outcome for the same individual
+
 
 
 ```r
@@ -788,7 +856,9 @@ as_kable(tbl)
 Teerenstra et al. also derived an alternative design effect that is specific to the ANCOVA model:
 
 DEFF = (1 + (n−1) * ICC) * (1 − r^2)
+
 => this will reduce the design effect further
+
 
 ```r
 (des_effect <- (1 + (n - 1) * rho) * (1 - r^2))
@@ -806,10 +876,15 @@ des_effect * 350 / n
 ## [1] 31.23755
 ```
 We reduced the design effect from 5.35 to 4.3 to 3.14 to 2.68
+
 => New Total Sample Size: 350 x 2.68 = 938 participants across ca. 32 sites (when baseline-adjusted)
+
 Instead of 350 x 3.14 = 1099 participants across ca. 38 sites when baseline period with closed cohort
+
 Instead of 350 x 4.3 = 1514 participants across ca. 52 sites when baseline period with cross-sectional
+
 Instead of 350 x 5.35 = 1872 participants across ca. 64 sites when no baseline period at all
+
 
 #### Let's confirm the power
 
@@ -833,19 +908,23 @@ mean(unlist(p_values) < 0.05)
 
 
 ## Simulation | Binary outcome
+
 Hypothetical cluster randomized trial (CRT), on the example of MOCA
+
 Interventions on the level of health care workers to reduce antibiotic prescriptions at health facilities
 
 Control: Standard of care
+
 Intervention 1: eHealth tool
+
 Intervention 2: eHealth tool + AMR stewardship clubs
+
 
 Important features and fixed parameters:
 - Max. 39 clusters (health centers) due to feasibility/budget
 - Binary outcome: Proportion of patients prescribed an antibiotic at first presentation to care
 - Baseline prescription rate at control clusters: 75%, from pilot data
 - Delta Control to Intervention 1: 25 percentage points, based on prior studies in similar setting and clinical relevance
-
 - Power min. 80%
 - ICC for AB prescription: 0.20, based on previous studies in same setting
 - Mean cluster size: 150 (to achieve within 2-3 month per cluster, at the end of the 6m implementation period)
@@ -899,21 +978,32 @@ cat("Total sample size:", n_total_2arm)
 ```
 A reduction of at least 25% percentage points is a Cohen's h of over 0.5 => medium effect.
 
+
 ### Now, let's move to a CRT design
 We have a binary outcome and will use a logistic model to model the log-odds (logit) of success. We convert the linear predictor into a probability using the inverse logit (logistic function): 
+
 P(Y_ij = 1) = e^ηij / 1 + e^ηij
 
-The probability of success is defined using a logistic model: 
+
+The probability of success is defined using a logistic model:
+
 ηij = b1 * rx_j + c_j (the linear predictor for individual i in cluster j)
+
 c_j = the random cluster effect (cluster-specific deviation from the overall average)
+
 b1 = the regression coefficient,
+
 rx_j = the treatment status of cluster j
 
+
 Let's figure out the ICC:
+
 ICC = Between-site variance / Total variance, whereby the between-site variance represents the clustering. 
 
 In logistic models, the residual (individual-level) variance is fixed at:
+
 π^2 / 3 = 3.29
+
 
 So, the between-site variance (σ^2_c), i.e. cluster-level noise, is what we need, and is therefore derived as:
 
@@ -922,6 +1012,7 @@ ICC = σ^2_c / (σ^2_c + (π^2 / 3))
 If ICC is assumed at 0.20, then σ^2_c is ca. 0.822
 
 (If there’s additional within-site variation over time, i.e. baseline period, we include σ^2_c_p, typically as a fraction of σ^2_c -> for a later stage).
+
 
 #### Let's generate the data, for a simple two-arm CRT with fixed cluster size, according to the parameters above
 
@@ -1420,40 +1511,59 @@ ggplot(data.frame(p_values), aes(x = p_values)) +
 ![](CRT_baseline_period_files/figure-html/unnamed-chunk-25-2.png)<!-- -->
 
 ### Let's discuss the different CRT estimands
+
 See https://doi.org/10.1093/ije/dyac131
+
 And https://journals.sagepub.com/doi/10.1177/09622802241254197
+
 And https://journals.sagepub.com/doi/10.1177/17407745231186094
+
 
 What’s the estimand of interest? This depends on the question we're trying to answer:
 
 1. Participant-average treatment effect
+
 Question: “What is the average effect of the intervention on an individual patient?”
 Each patient contributes equally.
 
 2. Cluster-average treatment effect
+
 Question: “What is the average effect of the intervention per facility?”
 Each facility contributes equally.
 
 See examples from publications: 
+
 (1) "For instance, if hospitals act as the cluster and the outcome relates to individual participants (e.g. a hospital-level intervention aiming to reduce mortality in presenting patients), then the participant-average treatment effect will be of most interest, as this represents the population impact of switching from the control to intervention."
+
 (2)"In a trial aiming to reduce unnecessary prescribing of antibiotics, in which doctors act as the cluster and outcomes are measured on each participant they treat, then a cluster-average treatment effect may also be of interest, as this provides the intervention’s effect on the clinician’s prescribing habits."
+
 (3) "Consider a trial comparing a quality improvement (QI) intervention to improve outcomes in patients undergoing emergency laparotomy. This intervention involves local QI leads implementing a hospital-wide improvement programme at each cluster. The primary outcome is overall mortality within 90 days and a secondary outcome is whether a senior surgeon is present in the operating theatre (either performing the surgery or supervising a more junior surgeon in doing so). 
+
 For the primary outcome, the interest clearly lies in the intervention effect on individual patients (i.e. how many additional lives can be saved through the QI intervention?). Thus, a participant-average treatment effect is most relevant here.
 However, the key secondary outcome (whether a senior surgeon is present) is intended to measure treatment success at the cluster level (i.e. whether the intervention was effective in making hospitals change their practice around emergency laparotomies). Hence, for this outcome, a cluster-average estimand may be the most relevant. We note that for the secondary outcome (whether a senior surgeon is present), both a participant-average and cluster-average treatment effect may be of scientific interest, in which case both could be specified (e.g. with the cluster-average treatment effect designated as the primary). However, including both estimands should only be done if both are indeed of scientific interest."
+
 "In this trial, it is plausible that success in implementing the QI intervention may differ between smaller and larger clusters due to differing resource levels available, resulting in an interaction between treatment effect and cluster size."
 
+
 A cluster-level analysis involves calculating a summary measure for each cluster (e.g. the mean outcome across participants in that cluster) and then comparing cluster-level summaries. 
+
 An individual-level analysis typically involves analysing participant-level outcomes using a regression model that accounts for correlations between participants from the same cluster.
 
 However, we can also re-weight a cluster-level analysis to give each participant equal weight to target a participant-average treatment effect, by weighting each individual by the inverse number of participants in that cluster.
+
 Similarly, we can re-weight individual-level analyses to give equal weight to each cluster to target a cluster-average treatment effect, by weighting each cluster by the number of participants within that cluster.
 
-Another issue in CRTs is that certain commonly used estimators can be biased when the cluster size is informative. Esp. when using the commonly used mixed-effects models with a random intercept for cluster, but also the generalized estimating equations (GEEs) with an exchangeable working correlation structure as used often in CRTs. Because they do not give equal weight to each participant. Instead, clusters are weighted by their inverse-variance, which is a function of both the cluster size and the ICC. 
+Another issue in CRTs is that certain commonly used estimators can be biased when the cluster size is informative. Esp. when using the commonly used mixed-effects models with a random intercept for cluster, but also the generalized estimating equations (GEEs) with an exchangeable working correlation structure as used often in CRTs. Because they do not give equal weight to each participant.
+
+Instead, clusters are weighted by their inverse-variance, which is a function of both the cluster size and the ICC. 
+
 
 Solution: IEE = independence estimating equation. Will be unbiased for the participant-average treatment effect, even if cluster size is informative.
+
 IEEs employ an independence working correlation structure in conjunction with robust standard errors to account for clustering.
 
 IEE can be easily implemented in R by using GEEs with a working independence assumption and robust standard errors or by using a standard regression model estimated by maximum likelihood/least squares with cluster-robust standard errors. 
+
 However, IEEs can be less efficient than mixed-effects models or GEEs with an exchangeable working correlation structure, so the latter could be used if there is a strong reason a priori to believe that the cluster size will not be informative.
 
 #### Let's investigate the participant-average treatment effect first (using participant-level data only)
@@ -1547,12 +1657,6 @@ results_table %>%
   kable_styling(full_width = FALSE)
 ```
 
-```
-## Warning in kable_styling(., full_width = FALSE): Please specify format in
-## kable. kableExtra can customize either HTML or LaTeX outputs. See
-## https://haozhu233.github.io/kableExtra/ for details.
-```
-
 
 
 |Method                               | Estimate (log-odds)| Odds Ratio| 95% CI Lower| 95% CI Upper|p-value |
@@ -1579,25 +1683,12 @@ model_cluster_iee <- geeglm(y1 ~ rx, id = site,
                     weights = inv_cluster_size,
                     family = binomial(link = "logit"),
                     corstr = "independence")
-```
-
-```
-## Warning in eval(family$initialize): non-integer #successes in a binomial glm!
-```
-
-```r
 model_cluster_iee_adj <- geeglm(y1 ~ rx + y0, id = site, 
                     data = df_crt_b, 
                     weights = inv_cluster_size,
                     family = binomial(link = "logit"),
                     corstr = "independence")
-```
 
-```
-## Warning in eval(family$initialize): non-integer #successes in a binomial glm!
-```
-
-```r
 ## Extract estimates from all models and compare across
 # IEE for cluster level
 c_iee_est <- summary(model_cluster_iee)$coefficients["rx1", "Estimate"]
@@ -1630,12 +1721,6 @@ results_table %>%
   kable_styling(full_width = FALSE)
 ```
 
-```
-## Warning in kable_styling(., full_width = FALSE): Please specify format in
-## kable. kableExtra can customize either HTML or LaTeX outputs. See
-## https://haozhu233.github.io/kableExtra/ for details.
-```
-
 
 
 |Method                                   | Estimate (log-odds)| Odds Ratio| 95% CI Lower| 95% CI Upper|p-value |
@@ -1643,6 +1728,8 @@ results_table %>%
 |CLuster-weighted IEE with robust SE      |              -0.929|        0.4|         0.23|         0.69|0.001   |
 |CLuster-weighted IEE with robust SE, adj |              -0.923|        0.4|         0.26|         0.62|<0.001  |
 
-=> No difference between cluster ATE and individual ATE suggests no informative cluster size: "If there is no informative cluster size, the participant-average and cluster-average effects will coincide and mixed-effects models target this common treatment effect." -> since my simulated data does not include CV there can be no ICS - correct.
+=> No difference between cluster ATE and individual ATE suggests no informative cluster size: "If there is no informative cluster size, the participant-average and cluster-average effects will coincide and mixed-effects models target this common treatment effect." 
+
+-> since my simulated data does not include CV there can be no ICS - correct.
 
 
