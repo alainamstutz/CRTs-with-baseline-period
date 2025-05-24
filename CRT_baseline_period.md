@@ -47,9 +47,11 @@ library(gtsummary)
 library(paletteer)
 library(magrittr)
 library(dplyr)
+library(kableExtra)
+library(geepack) # to tackle alternative estimands
 ```
 
-In case of an individual RCT, the individual-level variance (e.g. say𝜎= 64 => SD = 8) is the only source of variation. Let's assume the overall effect size (difference in average QoL scores across treatment groups) is 2.4, i.e. a standardized effect size of 2.4 / 8 = 0.3, i.e., the treatment effect of 2.4 is about 0.3 standard deviations large (Cohen's d), which often is referred to as a moderate effect size. 
+In case of an individual RCT, the individual-level variance (e.g. say σ = 64 => SD = 8) is the only source of variation. Let's assume the overall effect size (difference in average QoL scores across treatment groups) is 2.4, i.e. a standardized effect size of 2.4 / 8 = 0.3, i.e., the treatment effect of 2.4 is about 0.3 standard deviations large (Cohen's d), which often is referred to as a moderate effect size. 
 Let's calculate the sample size for a two-sample t-test (2 groups, independent, only 1 measurement at the end) based on the effect size (Cohen's d) and a power of 80%.
 
 ```r
@@ -95,7 +97,7 @@ ggplot(dd, aes(x = factor(rx), y = y, fill = factor(rx))) +
   scale_fill_manual(values = c("skyblue", "salmon")) + 
   theme_minimal() +
   theme(legend.title = element_blank()) +
-  ggtitle("Violin Plots, with point estimate, median with IQR")
+  ggtitle("Violin Plots, with point estimates incl. median with IQR")
 ```
 
 ![](CRT_baseline_period_files/figure-html/unnamed-chunk-3-1.png)<!-- -->
@@ -111,14 +113,26 @@ tbl <- tbl_regression(fit1) %>%
 as_kable(tbl)
 ```
 
-
-
-|**Characteristic** | **Beta** | **95% CI** | **p-value** |
-|:------------------|:--------:|:----------:|:-----------:|
-|rx                 |   2.7    |  1.0, 4.4  |    0.002    |
+<table>
+ <thead>
+  <tr>
+   <th style="text-align:left;"> **Characteristic** </th>
+   <th style="text-align:center;"> **Beta** </th>
+   <th style="text-align:center;"> **95% CI** </th>
+   <th style="text-align:center;"> **p-value** </th>
+  </tr>
+ </thead>
+<tbody>
+  <tr>
+   <td style="text-align:left;"> rx </td>
+   <td style="text-align:center;"> 2.7 </td>
+   <td style="text-align:center;"> 1.0, 4.4 </td>
+   <td style="text-align:center;"> 0.002 </td>
+  </tr>
+</tbody>
+</table>
 
 #### Let's confirm the power
-We can confirm the power by repeatedly generating data sets and fitting models, recording the p-values for each replication.
 
 ```r
 replicate <- function() {
@@ -127,82 +141,79 @@ replicate <- function() {
   coef(summary(fit1))["rx", "Pr(>|t|)"]
 }
 
-p_values <- mclapply(1:1000, function(x) replicate(), mc.cores = 4) # mclapply() is a parallelized version of the lapply() function that applies the replicate() function 1000 times. mc.cores = 4 means the code will use 4 cores for parallel computation, which speeds up the process by running multiple replications simultaneously.
-
 # Estimated power based on 1000 replications.
-# Convert the list of p-values into a vector and calculates the proportion of replications where the p-value is less than 0.05
+p_values <- mclapply(1:1000, function(x) replicate(), mc.cores = 8) # I have max. 8 cores for parallel computation
+
+# Calculate the proportion of replications where the p-value is less than 0.05
 mean(unlist(p_values) < 0.05)
 ```
 
 ```
-## [1] 0.791
+## [1] 0.801
 ```
 
-### Second, now move to a cluster randomized trial, but same context
-Parallel cluster randomized trial:
-𝑌𝑖𝑗=𝛼+𝛿𝑍𝑗+𝑐𝑗+𝑠𝑖
+### Now, let us move to a cluster randomized trial, but same context
+If we have a pre-specified number of participants at each site (i.e. no cluster variation), usually we simply figure out a design effect for clustering to multiply with the calculated individual RCT sample size.
 
-where 𝑌𝑖𝑗 is a continuous outcome for participant 𝑖 in site 𝑗. 𝑍𝑗 is the treatment indicator for site 𝑗. Again, 𝛿 is the treatment effect. 𝑐𝑗∼𝑁(0,𝜎^2𝑐) is a site level effect, and 𝑠𝑖∼𝑁(0,𝜎^2𝑠) is the participant level effect. The correlation of any two participants in a cluster is 𝜌 (the ICC):
+The usual: DEFF = 1 + (n − 1) x ICC, whereby n = cluster size
+If there is cluster variation, the usual (conservative?) recommendation is: DEFF_cv = 1 + (n x (1 + CV^2) - 1) x ICC, whereby CV is the coefficient of variation (ratio of standard deviation of cluster sizes to mean of cluster sizes), see here: https://pmc.ncbi.nlm.nih.gov/articles/PMC7394950/#sup1
 
-𝜌=𝜎^2𝑐/ (𝜎^2𝑐+𝜎^2𝑠)
+If the ICC (intracluster correlation coefficient, i.e. how correlated participants are within the same cluster in terms of the outcome in question) is higher, then design effect higher => more clusters needed.
 
-This tells us how correlated participants are within the same cluster.
-If ρ is close to 0, most of the variability is at the individual level.
-If ρ is close to 1, most of the variability is at the site level.
+In other words: 
+Yij = a + bZj + cj + si, where:
+Yij is a continuous outcome for participant i in site j,
+Zj is the treatment for site j,
+b the treatment effect,
+cj ~ N(0, σ^2 c) is the site level effect
+si ~ N(0, σ^2 s) is the individual-level effect
 
-If we have a pre-specified number (𝑛) of participants at each site, we can estimate the sample size required in the CRT applying a design effect 1+(𝑛−1)𝜌 to the sample size of an RCT that has the same overall variance.
-We know the overall variance (𝜎^2) is 64 and we assume/know the ICC/p is 0.15. That brings us to (using the ICC formula above)
+The correlation of any two participants in a cluster is the ICC or rho = σ^2_c / (σ^2_c + σ^2_s)
+If ICC/rho is close to 0, most of the variability is at the individual level.
+If ICC/rho is close to 1, most of the variability is at the site level.
 
-σ^2 c = 9.6 (site-level variance)
-σ^2 s = 54.4 (individual-level variance)
-ICC (ρ) = 0.15: 15% of the total variability in the outcome is due to differences between sites, while 85% is due to individual differences within sites.
+We assume an ICC/rho of 0.15, i.e., 15% of the total variance in the outcome is attributable to between-site variability, while the remaining 85% is due to individual-level variability within sites, leading to:
+σ^2_c = 9.6
+σ^2_s = 54.4
 
-Since individuals in the same cluster are correlated, we need to adjust the sample size using the design effect.
-Design Effect = 1+(n−1)ρ; where, n=30 (number of individuals per site), ρ = 0.15
-=> Design effect = 5.35
-=> New Total Sample Size = 5.35 × 350 = 1872
-Since each site includes 30 participants, the number of required sites is: 62.4 => 64
+Using the formula above, assuming an ICC/rho of 0.15 and fixed 30 participants per site:
+
+=> New Total Sample Size = 350 x 5.35 = 1872 participants across ca. 64 sites for the same question/effect.
 
 #### Let's generate the data
 
 ```r
 simple_crt <- function(nsites, n) {
-  # treatment assignment, again, 1:1, 50% prob to be in each group
+  # defC = cj
   defC <- defData(varname = "rx", formula = "1;1", dist = "trtAssign")
-  # Define Cluster-Level Data (defC)
-  # c (Random Site Effect from Normal Distribution)
-  # This represents site-level variation. It follows a normal distribution
-  # variance = 9.6 is the site-level variance (see above)
-  defC <- defData(defC, varname = "c", formula = "0", variance = 9.6, dist = "normal")  
-  # Define Individual-Level Outcome (defS)
-  # c: Site-level effect (previously defined).
-  # 2.4 * rx: Treatment effect for clusters assigned to intervention, see above
-  # s_i \sim N(0, 54.4): Individual-level noise, with variance 54.4.
+  # cluster variance = 9.6 (see above)
+  defC <- defData(defC, varname = "c", formula = "0", variance = 9.6, dist = "normal") # random site effect from normal distribution
+  # defS = si
+  # individual-level noise/variance = 54.4 (see above)
   defS <- defDataAdd(varname="y", formula="c + 2.4*rx", variance = 54.4, dist="normal")
 
-# site/cluster level data
-  # Generates nsites rows (one per cluster)
-  # Each row includes: rx (treatment assignment for the site) and c (site-specific random effect).
+  # Generate one row per cluster
+  # Each row includes: rx and cj
   dc <- genData(nsites, defC, id = "site")
 
-# individual level data
-  # Creates individual-level data by assigning n individuals to each site.
-  # Adds outcome (y) based on c, rx, and individual-level variance.
+  # Assign n individuals to each site.
+  # Add outcome (y) based on cj, rx, and si.
   dd <- genCluster(dc, "site", n, "id")
   dd <- addColumns(defS, dd)
   
   dd[]
 }
-# generating data for 20 sites, each with 50 individuals.
+
+# E.g. 20 sites, each with 50 individuals.
 dd <- simple_crt(20, 50)
 
 # Create violin plot with sites on x-axis and colors for treatment/control
 ggplot(dd, aes(x = factor(site), y = y, fill = factor(rx))) +
-  geom_violin(trim = FALSE, alpha = 0.5) +  # Violin plot with transparency
-  geom_boxplot(width = 0.2, outlier.shape = NA, color = "black") +  # Boxplot for central tendency
-  geom_jitter(shape = 16, position = position_jitter(0.2), alpha = 0.4) +  # Scatter individual points
+  geom_violin(trim = FALSE, alpha = 0.5) +
+  geom_boxplot(width = 0.2, outlier.shape = NA, color = "black") +
+  geom_jitter(shape = 16, position = position_jitter(0.2), alpha = 0.4) +
   scale_fill_manual(values = c("blue", "red"), labels = c("Control", "Treatment")) +
-  labs(x = "Site (Cluster)", y = "Outcome (y)", title = "Outcome Distribution by Site") +
+  labs(x = "Site (Cluster)", y = "Outcome (y)", title = "Outcome distribution by site") +
   theme_minimal() +
   theme(legend.title = element_blank(), axis.text.x = element_text(angle = 90, hjust = 1))
 ```
@@ -210,516 +221,76 @@ ggplot(dd, aes(x = factor(site), y = y, fill = factor(rx))) +
 ![](CRT_baseline_period_files/figure-html/unnamed-chunk-6-1.png)<!-- -->
 
 #### Let's estimate the effect size
-A mixed effects model is used to estimate the effect size.
+Use a linear mixed effects model
 
 ```r
 dd <- simple_crt(200,100)
 
 fit2 <- lmer(y ~  rx + (1|site), data = dd)
-tbl_regression(fit2, tidy_fun = broom.mixed::tidy)  %>% 
+tbl <- tbl_regression(fit2, tidy_fun = broom.mixed::tidy) %>% 
   modify_footnote(ci ~ NA, abbreviation = TRUE)
+
+# Render it as a markdown/kable table
+as_kable(tbl)
 ```
 
-```{=html}
-<div id="rljjahpizj" style="padding-left:0px;padding-right:0px;padding-top:10px;padding-bottom:10px;overflow-x:auto;overflow-y:auto;width:auto;height:auto;">
-<style>#rljjahpizj table {
-  font-family: system-ui, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
-
-#rljjahpizj thead, #rljjahpizj tbody, #rljjahpizj tfoot, #rljjahpizj tr, #rljjahpizj td, #rljjahpizj th {
-  border-style: none;
-}
-
-#rljjahpizj p {
-  margin: 0;
-  padding: 0;
-}
-
-#rljjahpizj .gt_table {
-  display: table;
-  border-collapse: collapse;
-  line-height: normal;
-  margin-left: auto;
-  margin-right: auto;
-  color: #333333;
-  font-size: 16px;
-  font-weight: normal;
-  font-style: normal;
-  background-color: #FFFFFF;
-  width: auto;
-  border-top-style: solid;
-  border-top-width: 2px;
-  border-top-color: #A8A8A8;
-  border-right-style: none;
-  border-right-width: 2px;
-  border-right-color: #D3D3D3;
-  border-bottom-style: solid;
-  border-bottom-width: 2px;
-  border-bottom-color: #A8A8A8;
-  border-left-style: none;
-  border-left-width: 2px;
-  border-left-color: #D3D3D3;
-}
-
-#rljjahpizj .gt_caption {
-  padding-top: 4px;
-  padding-bottom: 4px;
-}
-
-#rljjahpizj .gt_title {
-  color: #333333;
-  font-size: 125%;
-  font-weight: initial;
-  padding-top: 4px;
-  padding-bottom: 4px;
-  padding-left: 5px;
-  padding-right: 5px;
-  border-bottom-color: #FFFFFF;
-  border-bottom-width: 0;
-}
-
-#rljjahpizj .gt_subtitle {
-  color: #333333;
-  font-size: 85%;
-  font-weight: initial;
-  padding-top: 3px;
-  padding-bottom: 5px;
-  padding-left: 5px;
-  padding-right: 5px;
-  border-top-color: #FFFFFF;
-  border-top-width: 0;
-}
-
-#rljjahpizj .gt_heading {
-  background-color: #FFFFFF;
-  text-align: center;
-  border-bottom-color: #FFFFFF;
-  border-left-style: none;
-  border-left-width: 1px;
-  border-left-color: #D3D3D3;
-  border-right-style: none;
-  border-right-width: 1px;
-  border-right-color: #D3D3D3;
-}
-
-#rljjahpizj .gt_bottom_border {
-  border-bottom-style: solid;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-}
-
-#rljjahpizj .gt_col_headings {
-  border-top-style: solid;
-  border-top-width: 2px;
-  border-top-color: #D3D3D3;
-  border-bottom-style: solid;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-  border-left-style: none;
-  border-left-width: 1px;
-  border-left-color: #D3D3D3;
-  border-right-style: none;
-  border-right-width: 1px;
-  border-right-color: #D3D3D3;
-}
-
-#rljjahpizj .gt_col_heading {
-  color: #333333;
-  background-color: #FFFFFF;
-  font-size: 100%;
-  font-weight: normal;
-  text-transform: inherit;
-  border-left-style: none;
-  border-left-width: 1px;
-  border-left-color: #D3D3D3;
-  border-right-style: none;
-  border-right-width: 1px;
-  border-right-color: #D3D3D3;
-  vertical-align: bottom;
-  padding-top: 5px;
-  padding-bottom: 6px;
-  padding-left: 5px;
-  padding-right: 5px;
-  overflow-x: hidden;
-}
-
-#rljjahpizj .gt_column_spanner_outer {
-  color: #333333;
-  background-color: #FFFFFF;
-  font-size: 100%;
-  font-weight: normal;
-  text-transform: inherit;
-  padding-top: 0;
-  padding-bottom: 0;
-  padding-left: 4px;
-  padding-right: 4px;
-}
-
-#rljjahpizj .gt_column_spanner_outer:first-child {
-  padding-left: 0;
-}
-
-#rljjahpizj .gt_column_spanner_outer:last-child {
-  padding-right: 0;
-}
-
-#rljjahpizj .gt_column_spanner {
-  border-bottom-style: solid;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-  vertical-align: bottom;
-  padding-top: 5px;
-  padding-bottom: 5px;
-  overflow-x: hidden;
-  display: inline-block;
-  width: 100%;
-}
-
-#rljjahpizj .gt_spanner_row {
-  border-bottom-style: hidden;
-}
-
-#rljjahpizj .gt_group_heading {
-  padding-top: 8px;
-  padding-bottom: 8px;
-  padding-left: 5px;
-  padding-right: 5px;
-  color: #333333;
-  background-color: #FFFFFF;
-  font-size: 100%;
-  font-weight: initial;
-  text-transform: inherit;
-  border-top-style: solid;
-  border-top-width: 2px;
-  border-top-color: #D3D3D3;
-  border-bottom-style: solid;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-  border-left-style: none;
-  border-left-width: 1px;
-  border-left-color: #D3D3D3;
-  border-right-style: none;
-  border-right-width: 1px;
-  border-right-color: #D3D3D3;
-  vertical-align: middle;
-  text-align: left;
-}
-
-#rljjahpizj .gt_empty_group_heading {
-  padding: 0.5px;
-  color: #333333;
-  background-color: #FFFFFF;
-  font-size: 100%;
-  font-weight: initial;
-  border-top-style: solid;
-  border-top-width: 2px;
-  border-top-color: #D3D3D3;
-  border-bottom-style: solid;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-  vertical-align: middle;
-}
-
-#rljjahpizj .gt_from_md > :first-child {
-  margin-top: 0;
-}
-
-#rljjahpizj .gt_from_md > :last-child {
-  margin-bottom: 0;
-}
-
-#rljjahpizj .gt_row {
-  padding-top: 8px;
-  padding-bottom: 8px;
-  padding-left: 5px;
-  padding-right: 5px;
-  margin: 10px;
-  border-top-style: solid;
-  border-top-width: 1px;
-  border-top-color: #D3D3D3;
-  border-left-style: none;
-  border-left-width: 1px;
-  border-left-color: #D3D3D3;
-  border-right-style: none;
-  border-right-width: 1px;
-  border-right-color: #D3D3D3;
-  vertical-align: middle;
-  overflow-x: hidden;
-}
-
-#rljjahpizj .gt_stub {
-  color: #333333;
-  background-color: #FFFFFF;
-  font-size: 100%;
-  font-weight: initial;
-  text-transform: inherit;
-  border-right-style: solid;
-  border-right-width: 2px;
-  border-right-color: #D3D3D3;
-  padding-left: 5px;
-  padding-right: 5px;
-}
-
-#rljjahpizj .gt_stub_row_group {
-  color: #333333;
-  background-color: #FFFFFF;
-  font-size: 100%;
-  font-weight: initial;
-  text-transform: inherit;
-  border-right-style: solid;
-  border-right-width: 2px;
-  border-right-color: #D3D3D3;
-  padding-left: 5px;
-  padding-right: 5px;
-  vertical-align: top;
-}
-
-#rljjahpizj .gt_row_group_first td {
-  border-top-width: 2px;
-}
-
-#rljjahpizj .gt_row_group_first th {
-  border-top-width: 2px;
-}
-
-#rljjahpizj .gt_summary_row {
-  color: #333333;
-  background-color: #FFFFFF;
-  text-transform: inherit;
-  padding-top: 8px;
-  padding-bottom: 8px;
-  padding-left: 5px;
-  padding-right: 5px;
-}
-
-#rljjahpizj .gt_first_summary_row {
-  border-top-style: solid;
-  border-top-color: #D3D3D3;
-}
-
-#rljjahpizj .gt_first_summary_row.thick {
-  border-top-width: 2px;
-}
-
-#rljjahpizj .gt_last_summary_row {
-  padding-top: 8px;
-  padding-bottom: 8px;
-  padding-left: 5px;
-  padding-right: 5px;
-  border-bottom-style: solid;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-}
-
-#rljjahpizj .gt_grand_summary_row {
-  color: #333333;
-  background-color: #FFFFFF;
-  text-transform: inherit;
-  padding-top: 8px;
-  padding-bottom: 8px;
-  padding-left: 5px;
-  padding-right: 5px;
-}
-
-#rljjahpizj .gt_first_grand_summary_row {
-  padding-top: 8px;
-  padding-bottom: 8px;
-  padding-left: 5px;
-  padding-right: 5px;
-  border-top-style: double;
-  border-top-width: 6px;
-  border-top-color: #D3D3D3;
-}
-
-#rljjahpizj .gt_last_grand_summary_row_top {
-  padding-top: 8px;
-  padding-bottom: 8px;
-  padding-left: 5px;
-  padding-right: 5px;
-  border-bottom-style: double;
-  border-bottom-width: 6px;
-  border-bottom-color: #D3D3D3;
-}
-
-#rljjahpizj .gt_striped {
-  background-color: rgba(128, 128, 128, 0.05);
-}
-
-#rljjahpizj .gt_table_body {
-  border-top-style: solid;
-  border-top-width: 2px;
-  border-top-color: #D3D3D3;
-  border-bottom-style: solid;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-}
-
-#rljjahpizj .gt_footnotes {
-  color: #333333;
-  background-color: #FFFFFF;
-  border-bottom-style: none;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-  border-left-style: none;
-  border-left-width: 2px;
-  border-left-color: #D3D3D3;
-  border-right-style: none;
-  border-right-width: 2px;
-  border-right-color: #D3D3D3;
-}
-
-#rljjahpizj .gt_footnote {
-  margin: 0px;
-  font-size: 90%;
-  padding-top: 4px;
-  padding-bottom: 4px;
-  padding-left: 5px;
-  padding-right: 5px;
-}
-
-#rljjahpizj .gt_sourcenotes {
-  color: #333333;
-  background-color: #FFFFFF;
-  border-bottom-style: none;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-  border-left-style: none;
-  border-left-width: 2px;
-  border-left-color: #D3D3D3;
-  border-right-style: none;
-  border-right-width: 2px;
-  border-right-color: #D3D3D3;
-}
-
-#rljjahpizj .gt_sourcenote {
-  font-size: 90%;
-  padding-top: 4px;
-  padding-bottom: 4px;
-  padding-left: 5px;
-  padding-right: 5px;
-}
-
-#rljjahpizj .gt_left {
-  text-align: left;
-}
-
-#rljjahpizj .gt_center {
-  text-align: center;
-}
-
-#rljjahpizj .gt_right {
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-}
-
-#rljjahpizj .gt_font_normal {
-  font-weight: normal;
-}
-
-#rljjahpizj .gt_font_bold {
-  font-weight: bold;
-}
-
-#rljjahpizj .gt_font_italic {
-  font-style: italic;
-}
-
-#rljjahpizj .gt_super {
-  font-size: 65%;
-}
-
-#rljjahpizj .gt_footnote_marks {
-  font-size: 75%;
-  vertical-align: 0.4em;
-  position: initial;
-}
-
-#rljjahpizj .gt_asterisk {
-  font-size: 100%;
-  vertical-align: 0;
-}
-
-#rljjahpizj .gt_indent_1 {
-  text-indent: 5px;
-}
-
-#rljjahpizj .gt_indent_2 {
-  text-indent: 10px;
-}
-
-#rljjahpizj .gt_indent_3 {
-  text-indent: 15px;
-}
-
-#rljjahpizj .gt_indent_4 {
-  text-indent: 20px;
-}
-
-#rljjahpizj .gt_indent_5 {
-  text-indent: 25px;
-}
-</style>
-<table class="gt_table" data-quarto-disable-processing="false" data-quarto-bootstrap="false">
-  <thead>
-    
-    <tr class="gt_col_headings">
-      <th class="gt_col_heading gt_columns_bottom_border gt_left" rowspan="1" colspan="1" scope="col" id="&lt;strong&gt;Characteristic&lt;/strong&gt;"><strong>Characteristic</strong></th>
-      <th class="gt_col_heading gt_columns_bottom_border gt_center" rowspan="1" colspan="1" scope="col" id="&lt;strong&gt;Beta&lt;/strong&gt;"><strong>Beta</strong></th>
-      <th class="gt_col_heading gt_columns_bottom_border gt_center" rowspan="1" colspan="1" scope="col" id="&lt;strong&gt;95% CI&lt;/strong&gt;"><strong>95% CI</strong></th>
-      <th class="gt_col_heading gt_columns_bottom_border gt_center" rowspan="1" colspan="1" scope="col" id="&lt;strong&gt;p-value&lt;/strong&gt;"><strong>p-value</strong></th>
-    </tr>
-  </thead>
-  <tbody class="gt_table_body">
-    <tr><td headers="label" class="gt_row gt_left">rx</td>
-<td headers="estimate" class="gt_row gt_center">2.0</td>
-<td headers="ci" class="gt_row gt_center">1.0, 3.0</td>
-<td headers="p.value" class="gt_row gt_center"><0.001</td></tr>
-    <tr><td headers="label" class="gt_row gt_left">site.sd__(Intercept)</td>
-<td headers="estimate" class="gt_row gt_center">3.5</td>
-<td headers="ci" class="gt_row gt_center"></td>
-<td headers="p.value" class="gt_row gt_center"></td></tr>
-    <tr><td headers="label" class="gt_row gt_left">Residual.sd__Observation</td>
-<td headers="estimate" class="gt_row gt_center">7.4</td>
-<td headers="ci" class="gt_row gt_center"></td>
-<td headers="p.value" class="gt_row gt_center"></td></tr>
-  </tbody>
-  
-  
+<table>
+ <thead>
+  <tr>
+   <th style="text-align:left;"> **Characteristic** </th>
+   <th style="text-align:center;"> **Beta** </th>
+   <th style="text-align:center;"> **95% CI** </th>
+   <th style="text-align:center;"> **p-value** </th>
+  </tr>
+ </thead>
+<tbody>
+  <tr>
+   <td style="text-align:left;"> rx </td>
+   <td style="text-align:center;"> 2.0 </td>
+   <td style="text-align:center;"> 1.0, 3.0 </td>
+   <td style="text-align:center;"> &lt;0.001 </td>
+  </tr>
+  <tr>
+   <td style="text-align:left;"> site.sd__(Intercept) </td>
+   <td style="text-align:center;"> 3.5 </td>
+   <td style="text-align:center;">  </td>
+   <td style="text-align:center;">  </td>
+  </tr>
+  <tr>
+   <td style="text-align:left;"> Residual.sd__Observation </td>
+   <td style="text-align:center;"> 7.4 </td>
+   <td style="text-align:center;">  </td>
+   <td style="text-align:center;">  </td>
+  </tr>
+</tbody>
 </table>
-</div>
-```
 
 #### Let's confirm the power
-Confirm power and go back to the initial assumption of 64 sites with 30 participants per site, which is a massive increase from total sample size 350 (individual RCT) to 1920 in a simple CRT
+Confirm power and go back to the initial assumption of 64 sites with 30 participants per site, which, remember, is a massive increase from the total sample size of 350 for the individual RCT to 1920 across 64 sites in this simple CRT
 
 ```r
 replicate <- function() {
   dd <- simple_crt(64, 30)
   fit2 <- lmer(y ~  rx + (1|site), data = dd)
-  
   coef(summary(fit2))["rx", "Pr(>|t|)"]
 }
 
-p_values <- mclapply(1:1000, function(x) replicate(), mc.cores = 4)
+p_values <- mclapply(1:1000, function(x) replicate(), mc.cores = 8)
 
 mean(unlist(p_values) < 0.05)
 ```
 
 ```
-## [1] 0.805
+## [1] 0.789
 ```
 
 ```r
-# Run the power analysis simulation
-p_values <- unlist(p_values)  # Convert list to vector
+p_values <- unlist(p_values)
 
-# Create histogram
 ggplot(data.frame(p_values), aes(x = p_values)) +
   geom_histogram(binwidth = 0.05, fill = "blue", color = "black", alpha = 0.7) +
   geom_vline(xintercept = 0.05, linetype = "dashed", color = "red", linewidth = 1) +
-  labs(title = "Distribution of p-values from 1000 Simulations",
+  labs(title = "Distribution of p-values from 1000 simulations",
        x = "p-value",
        y = "Frequency") +
   theme_minimal()
@@ -731,28 +302,26 @@ ggplot(data.frame(p_values), aes(x = p_values)) +
 The baseline and follow-up measurements can be collected from the same participants (cohort design) or different participants (cross-sectional design), though the impact on the design effect depends on what approach is taken.
 The key idea is to measure the same outcome at two different time points to reduce variance and improve statistical power.
 
-𝑌𝑖𝑗𝑘 = 𝛼0 + 𝛼1𝑘 + 𝛿0𝑍𝑗 + 𝛿1𝑘𝑍𝑗 + 𝑐𝑗 + 𝑐𝑝𝑗𝑘 + 𝑠𝑖𝑗 + 𝑠𝑝𝑖𝑗𝑘
+In other words: 
+Yijk = a0 + a1k + b0Zj + b1kZj + cj + cpjk + sij + spijk, where:
 
-where 𝑌𝑖𝑗𝑘 is a continuous outcome measure for individual 𝑖 in site 𝑗 and measurement 𝑘∈{0,1}. 𝑘=0 for baseline measurement, and 𝑘=1 for the follow-up. 
-𝑍𝑗 is the treatment status of cluster 𝑗, 𝑍𝑗∈{0,1}. 
-𝛼0 is the mean outcome at baseline for participants in the control cluster. Baseline mean outcome in control clusters.
-𝛼1 is the change from baseline to follow-up in the control arm. Change over time in the control arm (i.e., how much the outcome changes naturally without intervention).
-𝛿0 is the difference at baseline between control and treatment arms (we would expect this to be 0 in a randomized trial)  
-𝛿1 is the difference in the change from baseline to follow-up between the two arms. In a randomized trial, since 𝛿0 should be close to 0, 𝛿1 is the treatment effect. Treatment effect, i.e., the difference in change from baseline to follow-up between treatment and control arms.
-
-The model has cluster-specific and individual-specific random effects. 
-For both, there can be time-invariant effects and time-varying effects.
+Yijk is a continuous outcome for participant i in site j and measurement/timepoint k (k=0 for baseline and k=1 for follow-up)
+Zj is the treatment for site j
+a0 is the mean outcome at baseline for participants in the control clusters
+a1 is the change from baseline to follow-up in the control arm (i.e. longitudinal change without intervention)
+b0 is the difference at baseline between control and treatment (we expect this to be 0 in a randomized trial)  
+b1 is the difference at follow-up, i.e. treatment effect
+The model has cluster-specific and individual-specific random effects. For both, there can be time-invariant effects and time-varying effects.
 Cluster-level effects (between-site variation):
-𝑐𝑗∼𝑁(0,𝜎2𝑐) are time invariant site-specific effects. Intrinsic differences between clusters.
-𝑐𝑝𝑗𝑘 ∼𝑁(0,𝜎2𝑐𝑝) are the site-specific period (time varying) effects. Changes over time within a site.
+cj ~ N(0, σ^2 c) are time invariant site-specific effects, intrinsic differences between clusters.
+cpjk ~ N(0, σ^2 c p) are the site-specific period (time varying) effects. Changes over time within a site.
 Individual-level effects (within-site variation):
-𝑠𝑖𝑗∼𝑁(0,𝜎2𝑠) are time invariant individual-level effects, stable individual characteristics.
-𝑠𝑝𝑖𝑗𝑘∼𝑁(0,𝜎2𝑠𝑝) are the individual-level period (time varying) effects, measurement error or individual change over time.
+sij ~ N(0, σ^2_s) are time invariant individual-level effects, stable individual characteristics.
+spijk ~ N(0, σ^2_s_p) are the individual-level period (time varying) effects, measurement error or individual change over time.
 
-Why Does This Help Reduce Sample Size?
-1. Since each individual (or site) has two measurements, we can control for their baseline score when estimating the treatment effect.
-2. This reduces residual variance, leading to a lower design effect and a smaller required sample size compared to a standard CRT.
-3. The benefit depends on the intra-cluster correlation (ICC) and how much baseline values predict follow-up values.
+Since each individual (or site) has two measurements, we can control for their baseline score when estimating the treatment effect.
+This reduces residual variance, leading to a lower design effect.
+The benefit depends on the ICC and how much baseline values predict follow-up values.
 
 #### Let's generate the data
 
@@ -762,47 +331,44 @@ Why Does This Help Reduce Sample Size?
 # effect: The treatment effect to be used for the formula in the outcome variable.
 # nsites: The number of sites (clusters) in the study.
 # n: The number of participants at each site.
-# s_c, s_cp, s_s, s_sp: These represent the variances of the respective random effects:
+# s_c, s_cp, s_s, s_sp: The variances of the respective random effects outlined above:
 #  s_c: Variance of cluster-level (site-level) time-invariant random effects.
 #  s_cp: Variance of cluster-level (site-level) time-varying random effects (due to different periods).
 #  s_s: Variance of participant-level time-invariant random effects.
 #  s_sp: Variance of participant-level time-varying random effects (due to periods).
 
 crt_base <- function(effect, nsites, n, s_c, s_cp, s_s, s_sp) {
-  # Variable c = cluster level, with variance s_c. It represents the time-invariant random effects at the cluster level.
+  # defC: represents the time-invariant random effects at the cluster level.
   defC <- defData(varname = "c", formula = 0, variance = "..s_c")
   defC <- defData(defC, varname = "rx", formula = "1;1", dist = "trtAssign")
-  # Cluster-Level Time-Varying Effects (defCP)
-  # This defines time-varying cluster-level random effects c.p with variance s_cp. This effect captures the change over time within clusters, for example, the different responses between baseline and follow-up at each site.
+  # defCP: cluster-level time-varying effects, for example, the different responses between baseline and follow-up at each site.
   defCP <- defDataAdd(varname = "c.p", formula = 0, variance = "..s_cp")
-  # This defines the individual-level random effects s with variance s_s. This represents individual individual variability that is constant across time.
+  # defS: individual-level random effects s with variance s_s.
   defS <- defDataAdd(varname = "s", formula = 0, variance = "..s_s")
-  # The treatment effect (effect) for the interaction between the treatment indicator (rx) and the period (period), which gives the treatment effect over time.
-  defSP <- defDataAdd(varname = "y",
-    formula = "..effect * rx * period + c + c.p + s", 
-    variance ="..s_sp")
+  # The treatment effect for the interaction between the treatment indicator (rx) and the period (period), which gives the treatment effect over time.
+  defSP <- defDataAdd(varname = "y", formula = "..effect * rx * period + c + c.p + s", variance ="..s_sp")
   
+  # Cluster-level
   dc <- genData(nsites, defC, id = "site")
   
-  # Add Periods to Cluster Data (dcp)
-  # This adds two periods (baseline and follow-up) to each cluster and adds the time-varying random effects (c.p).
+  # Add 2 periods to each cluster, and the time-varying random effects (c.p)
   dcp <- addPeriods(dc, 2, "site")
   dcp <- addColumns(defCP, dcp)
   dcp <- dcp[, .(site, period, c.p, timeID)]
   
-  # Generate Individual-Level Data (ds)
+  # Individual-level
   ds <- genCluster(dc, "site", n, "id")
   ds <- addColumns(defS, ds)
   
-  # Add Periods to Individual-Level Data (dsp)
-  # This adds two periods (baseline and follow-up) for each individual, creating the observational ID obsID.
+  # Add 2 periods to each individual
+  # This adds two periods (baseline and follow-up) for each individual, creating the "observational ID" for each observation per individual
   dsp <- addPeriods(ds, 2)
   setnames(dsp, "timeID", "obsID")
   
   setkey(dsp, site, period)
   setkey(dcp, site, period)
   
-  # Merge Cluster-Level and Individual-Level Data (dd)
+  # Merge the two
   dd <- merge(dsp, dcp)
   dd <- addColumns(defSP, dd)
   setkey(dd, site, id, period)
@@ -811,55 +377,42 @@ crt_base <- function(effect, nsites, n, s_c, s_cp, s_s, s_sp) {
 }
 ```
 
-Design effect
-
-In their paper, Teerenstra et al develop a design effect that takes into account the baseline measurement.
-
-The correlation of two participant measurements in the same cluster and same time period is the ICC or 𝜌, and is:
-
-𝜌 = (𝜎2𝑐 + 𝜎2𝑐𝑝) / (𝜎2𝑐 + 𝜎2𝑐𝑝 + 𝜎2𝑠 + 𝜎2𝑠𝑝)
+Design effect for this kind of set-up was derived here: https://onlinelibrary.wiley.com/doi/full/10.1002/sim.5352 
 
 In order to estimate the design effect, we need two more correlations. 
 First, the correlation between baseline and follow-up random effects at the cluster level:
-
-𝜌𝑐 = 𝜎2𝑐/ (𝜎2𝑐 + 𝜎2𝑐𝑝)
-
+rho_c = σ^2_c / (σ^2_c + σ^2_c_p)
 Second, the correlation between baseline and follow-up random effects at the individual level:
+rho_s = σ^2_s / (σ^2_s + σ^2_s_p)
+The overall correlation of two participant measurements in the same cluster and same time period (= ICC = rho):
+rho = (σ^2_c + σ^2_c_p) / (σ^2_c + σ^2_c_p + σ^2_s + σ^2_s_p)
 
-𝜌𝑠 = 𝜎2𝑠/ (𝜎2𝑠+𝜎2𝑠𝑝)
+So, the overall correlation from baseline to follow-up if the same individual, accounting for all correlations is "r":
+r = (n * rho * rho_c + (1-rho) * rho_s) / (1 + (n-1) * rho)
 
-A value 𝑟 is used to estimate the design effect, and is defined as:
+The design effect can be then be defined as follows (slightly adapted from before without baseline measure):
+DEFF = (1 + (n -1) * ICC) * (2 * (1 − r))
 
-𝑟= (𝑛𝜌𝜌𝑐 + (1−𝜌)𝜌𝑠) / (1 + (𝑛−1)𝜌)
+The first part of the formula is the usual clustering inflation.
+The second part of the formula adjusts for the reduction in variance due to the inclusion of baseline measurements in the analysis. The value of rho reflects how strongly the baseline and follow-up measurements correlate at both the cluster and individual levels.
+If the correlation between baseline and follow-up measurements is strong (i.e., high ps and high pc), this part of the formula will be closer to 0 => a lower design effect (and thus a lower required sample size).
 
-If we are able to collect baseline measurements and our focus is on estimating 𝛿1 from the model, the design effect is slightly modified from before:
-
-(1+(𝑛−1)𝜌) * (2(1−𝑟))
-
--> Basically, adding the second part with rho. r: The correlation factor, which is a weighted combination of the cluster-level and individual-level correlations.
-The first part of the formula is similar to the design effect formula used when baseline data isn't available. It adjusts for the clustering of individuals within sites (clusters), accounting for the intra-cluster correlation.
-The second part of the formula adjusts for the reduction in variance due to the inclusion of baseline measurements in the analysis. The value of r reflects how strongly the baseline and follow-up measurements correlate at both the cluster and individual levels.
-If the correlation between baseline and follow-up measurements is strong (i.e., high ps and high pc), this part of the formula will be small, implying a lower design effect (and thus a lower required sample size).
-
-By collecting baseline measurements, the baseline-to-follow-up correlation reduces the variability in the outcome variable, which allows for more precise estimates of the treatment effect and smaller sample size requirements. Specifically, reducing noise and allowing you to detect smaller treatment effects with the same sample size.
-By using the correlation between baseline and follow-up data, you can "shrink" the variability and make the study more efficient. This is crucial if the cost or effort of data collection is high, as it helps you achieve the same statistical power with a smaller sample.
+By collecting baseline measurements, the baseline-to-follow-up correlation reduces the variability in the outcome variable, which allows for more precise estimates of the treatment effect and smaller sample size requirements.
 
 
 #### Cross-section cohort design
-We may not be able to collect two measurements for each participants at a site, but if we can collect measurements on two different cohorts, one at baseline before the intervention is implemented, and one cohort in a second period (either after the intervention has been implemented or not, depending on the randomization assignment of the cluster), we might be able to reduce the number of clusters.
+If we collect baseline and follow-up from different cohorts (often done in large-scale CRTs with random sampling before/after)
+One measurement at baseline before the intervention is implemented, and one measurement from a different random sample in a second period. In this case, σ^2_s is 0 and ps is 0, so the model reduces to:
 
-In this case, 𝜎2𝑠= 0 and 𝜌𝑠= 0, so the general model reduces to:
+Yijk = a0 + a1k + b0Zj + b1kZj + cj + cpjk + spijk
 
-𝑌𝑖𝑗𝑘 = 𝛼0 + 𝛼1𝑘 + 𝛿0𝑍𝑗 + 𝛿1𝑘𝑍𝑗 + 𝑐𝑗 + 𝑐𝑝𝑗𝑘 + 𝑠𝑝𝑖𝑗𝑘
-
-So, we can drop 𝑠𝑖𝑗 because there is no individual-level correlation (independent participants)
-
-The parameters for this simulation are 
-𝛿1= 2.4 (treatment effect, see above)
-𝜎2𝑐= 6.8 (Cluster-level variance)
-𝜎2𝑐𝑝= 2.8 (Cluster-level period variance)
-𝜎2𝑠𝑝= 54.4 (Individual-level period variance) 
-Total variance:𝜎2𝑐 + 𝜎2𝑐𝑝 + 𝜎2𝑠𝑝 = 6.8 + 2.8 + 54.4 = 64, as used previously.
+The parameters for this simulation are:
+b1 = 2.4 (treatment effect, as defined)
+ICC = 0.15, as defined above
+σ^2_s_p = 54.4, as defined above (with σ^2_s = 0)
+σ^2_c = 6.8 (Cluster-level variance) by assuming that 70% of the between-cluster variance (=9.6, see above) is time-invariant (often assumed for psychological traits or stable health scores)
+σ^2_c_p = 2.8 (Cluster-level period variance)
+Total variance: σ^2_c + σ^2_c_p + σ^2_s_p = 6.8 + 2.8 + 54.4 = 64
 
 
 ```r
@@ -870,525 +423,94 @@ dd[, period_label := ifelse(period == 0, "Baseline", "Follow-up")]
 
 # Create a violin plot, faceted by site
 ggplot(dd, aes(x = period_label, y = y, fill = factor(rx))) + 
-  geom_violin(trim = FALSE, alpha = 0.1) +  # Make the violin plot transparent
-  geom_jitter(aes(color = factor(rx)), width = 0.1, alpha = 0.5) +  # Add individual data points
-  geom_boxplot(width = 0.1, color = "black", alpha = 0.3, outlier.shape = NA) +  # Add boxplots
+  geom_violin(trim = FALSE, alpha = 0.1) +
+  geom_jitter(aes(color = factor(rx)), width = 0.1, alpha = 0.5) +
+  geom_boxplot(width = 0.1, color = "black", alpha = 0.3, outlier.shape = NA) + 
   facet_wrap(~site, ncol = 5) +  # 5 columns for 20 sites
   scale_fill_manual(values = c("blue", "red"), labels = c("Control", "Intervention")) +
   scale_color_manual(values = c("blue", "red")) +
-  labs(title = "Violin Plot with Data Points and Boxplots by Site and Treatment Group", 
+  labs(title = "Violin plot, by clusters, and treatment group", 
        x = "Measurement Time", y = "Outcome Value") +
   theme_minimal() + 
   theme(legend.position = "bottom", 
         strip.text = element_text(size = 8), 
-        axis.text.x = element_text(angle = 45, hjust = 1))  # Adjust text angles for clarity
+        axis.text.x = element_text(angle = 45, hjust = 1))
 ```
 
 ![](CRT_baseline_period_files/figure-html/unnamed-chunk-10-1.png)<!-- -->
 
 #### Let's estimate the effect size
-To estimate the effect size we fit a mixed effect model with cluster-specific effects only (both time invariant and time varying).
-Treatment effect under "period*rx" !
-Translating the Formula:
-Fixed Effects:
-Fixed effect for 𝛼1𝑘: This is represented by period in the model, which captures the difference between baseline and follow-up.
-Fixed effect for treatment group (rx) 𝛿0𝑍𝑗 : This is represented by rx and captures whether the site received treatment or control.
-Interaction of time and treatment (period * rx) 𝛿1𝑘𝑍𝑗 : This interaction term captures how the treatment effect differs between baseline and follow-up.
+To estimate the effect size we fit a mixed effect model:
+
+Yijk = a0 + a1k + b0Zj + b1kZj + cj + cpjk + spijk
+
+lmer(y ~ period * rx + (1|timeID:site) + (1|site), data = dd)
+
+a0 + a1k -> Fixed Effects period * rx, which captures the difference between baseline and follow-up, and if the site received treatment or not => the interaction term captures how the treatment effect differs between baseline and follow-up and represents thus the treatment effect b1.
+
 Random Effects:
-(1 | site): 𝑐𝑗 : A random intercept for each site. This accounts for the variability between sites but assumes the variability is constant across time (since it's not tied to the period).
-(1 | timeID:site):𝑐𝑝𝑗𝑘: A random intercept for each site in each time period (baseline and follow-up). This accounts for the site-specific changes over time—it captures how variability between sites changes from baseline to follow-up.
-s pij is not included in your current model for the cross-sectional design because you are assuming independence between individuals at baseline and follow-up.
+σ^2_c_p = s_cp = cpjk = (1|timeID:site): A random intercept for each site in each time period (baseline and follow-up). This accounts for the site-specific change/variability over time.
+σ^2_c = s_c = cj = (1|site): A random intercept for each site.
+σ^2_s_p = s_sp = spijk: Since it's cross-sectional, there's no need for person-specific intercepts (sij) and we thus exclude any individual random effects in the model
 
 ```r
 dd <- crt_base(effect = 2.4, nsites = 200, n = 100, s_c=6.8, s_cp=2.8, s_s=0, s_sp=54.4)
 
-fit3 <- lmer(y ~ period * rx + (1|timeID:site) + (1 | site), data = dd)
-tbl_regression(fit3, tidy_fun = broom.mixed::tidy)  %>% 
+fit3 <- lmer(y ~ period * rx + (1|timeID:site) + (1|site), data = dd)
+
+tbl <- tbl_regression(fit3, tidy_fun = broom.mixed::tidy)  %>% 
   modify_footnote(ci ~ NA, abbreviation = TRUE)
+as_kable(tbl)
 ```
 
-```{=html}
-<div id="glgybapbqf" style="padding-left:0px;padding-right:0px;padding-top:10px;padding-bottom:10px;overflow-x:auto;overflow-y:auto;width:auto;height:auto;">
-<style>#glgybapbqf table {
-  font-family: system-ui, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
-
-#glgybapbqf thead, #glgybapbqf tbody, #glgybapbqf tfoot, #glgybapbqf tr, #glgybapbqf td, #glgybapbqf th {
-  border-style: none;
-}
-
-#glgybapbqf p {
-  margin: 0;
-  padding: 0;
-}
-
-#glgybapbqf .gt_table {
-  display: table;
-  border-collapse: collapse;
-  line-height: normal;
-  margin-left: auto;
-  margin-right: auto;
-  color: #333333;
-  font-size: 16px;
-  font-weight: normal;
-  font-style: normal;
-  background-color: #FFFFFF;
-  width: auto;
-  border-top-style: solid;
-  border-top-width: 2px;
-  border-top-color: #A8A8A8;
-  border-right-style: none;
-  border-right-width: 2px;
-  border-right-color: #D3D3D3;
-  border-bottom-style: solid;
-  border-bottom-width: 2px;
-  border-bottom-color: #A8A8A8;
-  border-left-style: none;
-  border-left-width: 2px;
-  border-left-color: #D3D3D3;
-}
-
-#glgybapbqf .gt_caption {
-  padding-top: 4px;
-  padding-bottom: 4px;
-}
-
-#glgybapbqf .gt_title {
-  color: #333333;
-  font-size: 125%;
-  font-weight: initial;
-  padding-top: 4px;
-  padding-bottom: 4px;
-  padding-left: 5px;
-  padding-right: 5px;
-  border-bottom-color: #FFFFFF;
-  border-bottom-width: 0;
-}
-
-#glgybapbqf .gt_subtitle {
-  color: #333333;
-  font-size: 85%;
-  font-weight: initial;
-  padding-top: 3px;
-  padding-bottom: 5px;
-  padding-left: 5px;
-  padding-right: 5px;
-  border-top-color: #FFFFFF;
-  border-top-width: 0;
-}
-
-#glgybapbqf .gt_heading {
-  background-color: #FFFFFF;
-  text-align: center;
-  border-bottom-color: #FFFFFF;
-  border-left-style: none;
-  border-left-width: 1px;
-  border-left-color: #D3D3D3;
-  border-right-style: none;
-  border-right-width: 1px;
-  border-right-color: #D3D3D3;
-}
-
-#glgybapbqf .gt_bottom_border {
-  border-bottom-style: solid;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-}
-
-#glgybapbqf .gt_col_headings {
-  border-top-style: solid;
-  border-top-width: 2px;
-  border-top-color: #D3D3D3;
-  border-bottom-style: solid;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-  border-left-style: none;
-  border-left-width: 1px;
-  border-left-color: #D3D3D3;
-  border-right-style: none;
-  border-right-width: 1px;
-  border-right-color: #D3D3D3;
-}
-
-#glgybapbqf .gt_col_heading {
-  color: #333333;
-  background-color: #FFFFFF;
-  font-size: 100%;
-  font-weight: normal;
-  text-transform: inherit;
-  border-left-style: none;
-  border-left-width: 1px;
-  border-left-color: #D3D3D3;
-  border-right-style: none;
-  border-right-width: 1px;
-  border-right-color: #D3D3D3;
-  vertical-align: bottom;
-  padding-top: 5px;
-  padding-bottom: 6px;
-  padding-left: 5px;
-  padding-right: 5px;
-  overflow-x: hidden;
-}
-
-#glgybapbqf .gt_column_spanner_outer {
-  color: #333333;
-  background-color: #FFFFFF;
-  font-size: 100%;
-  font-weight: normal;
-  text-transform: inherit;
-  padding-top: 0;
-  padding-bottom: 0;
-  padding-left: 4px;
-  padding-right: 4px;
-}
-
-#glgybapbqf .gt_column_spanner_outer:first-child {
-  padding-left: 0;
-}
-
-#glgybapbqf .gt_column_spanner_outer:last-child {
-  padding-right: 0;
-}
-
-#glgybapbqf .gt_column_spanner {
-  border-bottom-style: solid;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-  vertical-align: bottom;
-  padding-top: 5px;
-  padding-bottom: 5px;
-  overflow-x: hidden;
-  display: inline-block;
-  width: 100%;
-}
-
-#glgybapbqf .gt_spanner_row {
-  border-bottom-style: hidden;
-}
-
-#glgybapbqf .gt_group_heading {
-  padding-top: 8px;
-  padding-bottom: 8px;
-  padding-left: 5px;
-  padding-right: 5px;
-  color: #333333;
-  background-color: #FFFFFF;
-  font-size: 100%;
-  font-weight: initial;
-  text-transform: inherit;
-  border-top-style: solid;
-  border-top-width: 2px;
-  border-top-color: #D3D3D3;
-  border-bottom-style: solid;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-  border-left-style: none;
-  border-left-width: 1px;
-  border-left-color: #D3D3D3;
-  border-right-style: none;
-  border-right-width: 1px;
-  border-right-color: #D3D3D3;
-  vertical-align: middle;
-  text-align: left;
-}
-
-#glgybapbqf .gt_empty_group_heading {
-  padding: 0.5px;
-  color: #333333;
-  background-color: #FFFFFF;
-  font-size: 100%;
-  font-weight: initial;
-  border-top-style: solid;
-  border-top-width: 2px;
-  border-top-color: #D3D3D3;
-  border-bottom-style: solid;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-  vertical-align: middle;
-}
-
-#glgybapbqf .gt_from_md > :first-child {
-  margin-top: 0;
-}
-
-#glgybapbqf .gt_from_md > :last-child {
-  margin-bottom: 0;
-}
-
-#glgybapbqf .gt_row {
-  padding-top: 8px;
-  padding-bottom: 8px;
-  padding-left: 5px;
-  padding-right: 5px;
-  margin: 10px;
-  border-top-style: solid;
-  border-top-width: 1px;
-  border-top-color: #D3D3D3;
-  border-left-style: none;
-  border-left-width: 1px;
-  border-left-color: #D3D3D3;
-  border-right-style: none;
-  border-right-width: 1px;
-  border-right-color: #D3D3D3;
-  vertical-align: middle;
-  overflow-x: hidden;
-}
-
-#glgybapbqf .gt_stub {
-  color: #333333;
-  background-color: #FFFFFF;
-  font-size: 100%;
-  font-weight: initial;
-  text-transform: inherit;
-  border-right-style: solid;
-  border-right-width: 2px;
-  border-right-color: #D3D3D3;
-  padding-left: 5px;
-  padding-right: 5px;
-}
-
-#glgybapbqf .gt_stub_row_group {
-  color: #333333;
-  background-color: #FFFFFF;
-  font-size: 100%;
-  font-weight: initial;
-  text-transform: inherit;
-  border-right-style: solid;
-  border-right-width: 2px;
-  border-right-color: #D3D3D3;
-  padding-left: 5px;
-  padding-right: 5px;
-  vertical-align: top;
-}
-
-#glgybapbqf .gt_row_group_first td {
-  border-top-width: 2px;
-}
-
-#glgybapbqf .gt_row_group_first th {
-  border-top-width: 2px;
-}
-
-#glgybapbqf .gt_summary_row {
-  color: #333333;
-  background-color: #FFFFFF;
-  text-transform: inherit;
-  padding-top: 8px;
-  padding-bottom: 8px;
-  padding-left: 5px;
-  padding-right: 5px;
-}
-
-#glgybapbqf .gt_first_summary_row {
-  border-top-style: solid;
-  border-top-color: #D3D3D3;
-}
-
-#glgybapbqf .gt_first_summary_row.thick {
-  border-top-width: 2px;
-}
-
-#glgybapbqf .gt_last_summary_row {
-  padding-top: 8px;
-  padding-bottom: 8px;
-  padding-left: 5px;
-  padding-right: 5px;
-  border-bottom-style: solid;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-}
-
-#glgybapbqf .gt_grand_summary_row {
-  color: #333333;
-  background-color: #FFFFFF;
-  text-transform: inherit;
-  padding-top: 8px;
-  padding-bottom: 8px;
-  padding-left: 5px;
-  padding-right: 5px;
-}
-
-#glgybapbqf .gt_first_grand_summary_row {
-  padding-top: 8px;
-  padding-bottom: 8px;
-  padding-left: 5px;
-  padding-right: 5px;
-  border-top-style: double;
-  border-top-width: 6px;
-  border-top-color: #D3D3D3;
-}
-
-#glgybapbqf .gt_last_grand_summary_row_top {
-  padding-top: 8px;
-  padding-bottom: 8px;
-  padding-left: 5px;
-  padding-right: 5px;
-  border-bottom-style: double;
-  border-bottom-width: 6px;
-  border-bottom-color: #D3D3D3;
-}
-
-#glgybapbqf .gt_striped {
-  background-color: rgba(128, 128, 128, 0.05);
-}
-
-#glgybapbqf .gt_table_body {
-  border-top-style: solid;
-  border-top-width: 2px;
-  border-top-color: #D3D3D3;
-  border-bottom-style: solid;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-}
-
-#glgybapbqf .gt_footnotes {
-  color: #333333;
-  background-color: #FFFFFF;
-  border-bottom-style: none;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-  border-left-style: none;
-  border-left-width: 2px;
-  border-left-color: #D3D3D3;
-  border-right-style: none;
-  border-right-width: 2px;
-  border-right-color: #D3D3D3;
-}
-
-#glgybapbqf .gt_footnote {
-  margin: 0px;
-  font-size: 90%;
-  padding-top: 4px;
-  padding-bottom: 4px;
-  padding-left: 5px;
-  padding-right: 5px;
-}
-
-#glgybapbqf .gt_sourcenotes {
-  color: #333333;
-  background-color: #FFFFFF;
-  border-bottom-style: none;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-  border-left-style: none;
-  border-left-width: 2px;
-  border-left-color: #D3D3D3;
-  border-right-style: none;
-  border-right-width: 2px;
-  border-right-color: #D3D3D3;
-}
-
-#glgybapbqf .gt_sourcenote {
-  font-size: 90%;
-  padding-top: 4px;
-  padding-bottom: 4px;
-  padding-left: 5px;
-  padding-right: 5px;
-}
-
-#glgybapbqf .gt_left {
-  text-align: left;
-}
-
-#glgybapbqf .gt_center {
-  text-align: center;
-}
-
-#glgybapbqf .gt_right {
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-}
-
-#glgybapbqf .gt_font_normal {
-  font-weight: normal;
-}
-
-#glgybapbqf .gt_font_bold {
-  font-weight: bold;
-}
-
-#glgybapbqf .gt_font_italic {
-  font-style: italic;
-}
-
-#glgybapbqf .gt_super {
-  font-size: 65%;
-}
-
-#glgybapbqf .gt_footnote_marks {
-  font-size: 75%;
-  vertical-align: 0.4em;
-  position: initial;
-}
-
-#glgybapbqf .gt_asterisk {
-  font-size: 100%;
-  vertical-align: 0;
-}
-
-#glgybapbqf .gt_indent_1 {
-  text-indent: 5px;
-}
-
-#glgybapbqf .gt_indent_2 {
-  text-indent: 10px;
-}
-
-#glgybapbqf .gt_indent_3 {
-  text-indent: 15px;
-}
-
-#glgybapbqf .gt_indent_4 {
-  text-indent: 20px;
-}
-
-#glgybapbqf .gt_indent_5 {
-  text-indent: 25px;
-}
-</style>
-<table class="gt_table" data-quarto-disable-processing="false" data-quarto-bootstrap="false">
-  <thead>
-    
-    <tr class="gt_col_headings">
-      <th class="gt_col_heading gt_columns_bottom_border gt_left" rowspan="1" colspan="1" scope="col" id="&lt;strong&gt;Characteristic&lt;/strong&gt;"><strong>Characteristic</strong></th>
-      <th class="gt_col_heading gt_columns_bottom_border gt_center" rowspan="1" colspan="1" scope="col" id="&lt;strong&gt;Beta&lt;/strong&gt;"><strong>Beta</strong></th>
-      <th class="gt_col_heading gt_columns_bottom_border gt_center" rowspan="1" colspan="1" scope="col" id="&lt;strong&gt;95% CI&lt;/strong&gt;"><strong>95% CI</strong></th>
-      <th class="gt_col_heading gt_columns_bottom_border gt_center" rowspan="1" colspan="1" scope="col" id="&lt;strong&gt;p-value&lt;/strong&gt;"><strong>p-value</strong></th>
-    </tr>
-  </thead>
-  <tbody class="gt_table_body">
-    <tr><td headers="label" class="gt_row gt_left">period</td>
-<td headers="estimate" class="gt_row gt_center">-0.26</td>
-<td headers="ci" class="gt_row gt_center">-0.78, 0.27</td>
-<td headers="p.value" class="gt_row gt_center">0.3</td></tr>
-    <tr><td headers="label" class="gt_row gt_left">rx</td>
-<td headers="estimate" class="gt_row gt_center">-0.51</td>
-<td headers="ci" class="gt_row gt_center">-1.4, 0.36</td>
-<td headers="p.value" class="gt_row gt_center">0.2</td></tr>
-    <tr><td headers="label" class="gt_row gt_left">period * rx</td>
-<td headers="estimate" class="gt_row gt_center">2.6</td>
-<td headers="ci" class="gt_row gt_center">1.8, 3.3</td>
-<td headers="p.value" class="gt_row gt_center"><0.001</td></tr>
-    <tr><td headers="label" class="gt_row gt_left">timeID:site.sd__(Intercept)</td>
-<td headers="estimate" class="gt_row gt_center">1.7</td>
-<td headers="ci" class="gt_row gt_center"></td>
-<td headers="p.value" class="gt_row gt_center"></td></tr>
-    <tr><td headers="label" class="gt_row gt_left">site.sd__(Intercept)</td>
-<td headers="estimate" class="gt_row gt_center">2.5</td>
-<td headers="ci" class="gt_row gt_center"></td>
-<td headers="p.value" class="gt_row gt_center"></td></tr>
-    <tr><td headers="label" class="gt_row gt_left">Residual.sd__Observation</td>
-<td headers="estimate" class="gt_row gt_center">7.4</td>
-<td headers="ci" class="gt_row gt_center"></td>
-<td headers="p.value" class="gt_row gt_center"></td></tr>
-  </tbody>
-  
-  
+<table>
+ <thead>
+  <tr>
+   <th style="text-align:left;"> **Characteristic** </th>
+   <th style="text-align:center;"> **Beta** </th>
+   <th style="text-align:center;"> **95% CI** </th>
+   <th style="text-align:center;"> **p-value** </th>
+  </tr>
+ </thead>
+<tbody>
+  <tr>
+   <td style="text-align:left;"> period </td>
+   <td style="text-align:center;"> 0.02 </td>
+   <td style="text-align:center;"> -0.50, 0.55 </td>
+   <td style="text-align:center;"> &gt;0.9 </td>
+  </tr>
+  <tr>
+   <td style="text-align:left;"> rx </td>
+   <td style="text-align:center;"> 0.97 </td>
+   <td style="text-align:center;"> 0.11, 1.8 </td>
+   <td style="text-align:center;"> 0.027 </td>
+  </tr>
+  <tr>
+   <td style="text-align:left;"> period * rx </td>
+   <td style="text-align:center;"> 2.0 </td>
+   <td style="text-align:center;"> 1.3, 2.8 </td>
+   <td style="text-align:center;"> &lt;0.001 </td>
+  </tr>
+  <tr>
+   <td style="text-align:left;"> timeID:site.sd__(Intercept) </td>
+   <td style="text-align:center;"> 1.7 </td>
+   <td style="text-align:center;">  </td>
+   <td style="text-align:center;">  </td>
+  </tr>
+  <tr>
+   <td style="text-align:left;"> site.sd__(Intercept) </td>
+   <td style="text-align:center;"> 2.4 </td>
+   <td style="text-align:center;">  </td>
+   <td style="text-align:center;">  </td>
+  </tr>
+  <tr>
+   <td style="text-align:left;"> Residual.sd__Observation </td>
+   <td style="text-align:center;"> 7.4 </td>
+   <td style="text-align:center;">  </td>
+   <td style="text-align:center;">  </td>
+  </tr>
+</tbody>
 </table>
-</div>
-```
 
 #### Let's update the Design Effect
 
@@ -1407,7 +529,6 @@ n <- 30
 
 r <- (n * rho * rho_c + (1-rho) * rho_s) / (1 + (n-1) * rho)
 
-# The design effect for the CRT without any baseline measurement was 5.35. With the two-cohort design, the design effect is reduced slightly:
 (des_effect <- (1 + (n - 1) * rho) * 2 * (1 - r))
 ```
 
@@ -1416,55 +537,47 @@ r <- (n * rho * rho_c + (1-rho) * rho_s) / (1 + (n-1) * rho)
 ```
 
 ```r
-## [1] 4.3
-
-# and thus leaves us with:
 des_effect * 350 / n
 ```
 
 ```
 ## [1] 50.45833
 ```
-
-```r
-## [1] 50
-
-# The desired number of sites is over 50, so rounding up to the next even number gives us 52
-```
+We reduced the design effect from 5.35 to 4.3 
+=> New Total Sample Size: 350 x 4.3 = 1514 participants across ca. 52 sites
+Instead of 350 x 5.35 = 1872 participants across ca. 64 sites
 
 #### Let's confirm the power
-After calculating the design effect, we run a simulation to confirm the statistical power based on the specified number of sites (52) and participants per site (30). The goal is to check whether the p-value for the treatment effect (period*rx) is statistically significant in at least 80% of simulations.
 
 ```r
 replicate <- function() {
   dd <- crt_base(2.4, 52, 30, s_c = 6.8, s_cp = 2.8, s_s = 0, s_sp = 54.4)
   fit3 <- lmer(y ~ period * rx + (1|timeID:site) + (1 | site), data = dd)
-  
   coef(summary(fit3))["period:rx", "Pr(>|t|)"]
 }
 
-p_values <- mclapply(1:1000, function(x) replicate(), mc.cores = 4)
+p_values <- mclapply(1:1000, function(x) replicate(), mc.cores = 8)
 
 mean(unlist(p_values) < 0.05)
 ```
 
 ```
-## [1] 0.78
+## [1] 0.781
 ```
 
 #### Closed cohort design
-We can reduce the number of clusters further if instead of measuring one cohort prior to the intervention and another after the intervention, we measure a single cohort twice - once at baseline and once at follow-up. Now we use the full model that decomposes the participant level variance into a time invariant effect (𝑐𝑗) and a time varying effect (𝑐𝑝𝑗𝑘):
+According to the logic, we can reduce further if we measure a single cohort twice and make full use of the model.
 
-𝑌𝑖𝑗𝑘 = 𝛼0 + 𝛼1𝑘 + 𝛿0𝑍𝑗 + 𝛿1𝑘𝑍𝑗 + 𝑐𝑗 + 𝑐𝑝𝑗𝑘 + 𝑠𝑖𝑗 + 𝑠𝑝𝑖𝑗𝑘
+Yijk = a0 + a1k + b0Zj + b1kZj + cj + cpjk + sij + spijk
 
 #### Let's generate the data
-The parameters for this simulation are 
-𝛿1 = 2.4 (treatment effect, see above)
-𝜎2𝑐 = 6.8 (Cluster-level variance)
-𝜎2𝑐𝑝 = 2.8 (Cluster-level period variance)
-𝜎𝑠 = 38 (Individual-level variance) 
-𝜎2𝑠𝑝 = 16.4 (Individual-level period variance) 
-Total variance = 64, as used previously.
+The parameters for this simulation are:
+b1 = 2.4 (treatment effect, as defined)
+ICC = 0.15, as defined above
+σ^2_c = 6.8 (Cluster-level variance) by assuming that 70% of the between-cluster variance (9.6, see above) is time-invariant/persistent 
+σ^2_c_p = 2.8 (Cluster-level period variance)
+σ^2_s = 38 (Individual-level variance) by assuming that 70% of individual variance is persistent
+σ^2_s_p = 16.4 (Individual-level period variance) 
 
 ```r
 dd <- crt_base(effect=2.4, nsites=20, n=30, s_c=6.8, s_cp=2.8, s_s=38, s_sp=16.4)
@@ -1487,511 +600,78 @@ ggplot(dd, aes(x = period, y = y, group = id, color = as.factor(rx))) +
 ![](CRT_baseline_period_files/figure-html/unnamed-chunk-14-1.png)<!-- -->
 
 #### Let's estimate the effect size
-The mixed effect model includes cluster-specific effects only (both time invariant and time varying), as well as subject level effects. 
+To estimate the effect size we fit the full mixed effect model:
+
+Yijk = a0 + a1k + b0Zj + b1kZj + cj + cpjk + sij + spijk
+
+lmer(y ~ period * rx + (1|id:site) + (1|timeID:site) + (1|site), data = dd)
+
+I.e. including (1|id:site)
 
 ```r
 dd <- crt_base(effect = 2.4, nsites = 200, n = 100, 
   s_c = 6.8, s_cp = 2.8, s_s = 38, s_sp = 16.4)
 
-fit4 <- lmer(y ~ period*rx + (1 | id:site) + (1|timeID:site) + (1 | site), data = dd)
-```
-
-```
-## Warning in checkConv(attr(opt, "derivs"), opt$par, ctrl = control$checkConv, :
-## Model failed to converge with max|grad| = 0.00239105 (tol = 0.002, component 1)
-```
-
-```r
-tbl_regression(fit4, tidy_fun = broom.mixed::tidy)  %>% 
+fit4 <- lmer(y ~ period * rx + (1 | id:site) + (1|timeID:site) + (1 | site), data = dd)
+tbl <- tbl_regression(fit4, tidy_fun = broom.mixed::tidy)  %>% 
   modify_footnote(ci ~ NA, abbreviation = TRUE)
+as_kable(tbl)
 ```
 
-```{=html}
-<div id="xagpbsrbgq" style="padding-left:0px;padding-right:0px;padding-top:10px;padding-bottom:10px;overflow-x:auto;overflow-y:auto;width:auto;height:auto;">
-<style>#xagpbsrbgq table {
-  font-family: system-ui, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
-
-#xagpbsrbgq thead, #xagpbsrbgq tbody, #xagpbsrbgq tfoot, #xagpbsrbgq tr, #xagpbsrbgq td, #xagpbsrbgq th {
-  border-style: none;
-}
-
-#xagpbsrbgq p {
-  margin: 0;
-  padding: 0;
-}
-
-#xagpbsrbgq .gt_table {
-  display: table;
-  border-collapse: collapse;
-  line-height: normal;
-  margin-left: auto;
-  margin-right: auto;
-  color: #333333;
-  font-size: 16px;
-  font-weight: normal;
-  font-style: normal;
-  background-color: #FFFFFF;
-  width: auto;
-  border-top-style: solid;
-  border-top-width: 2px;
-  border-top-color: #A8A8A8;
-  border-right-style: none;
-  border-right-width: 2px;
-  border-right-color: #D3D3D3;
-  border-bottom-style: solid;
-  border-bottom-width: 2px;
-  border-bottom-color: #A8A8A8;
-  border-left-style: none;
-  border-left-width: 2px;
-  border-left-color: #D3D3D3;
-}
-
-#xagpbsrbgq .gt_caption {
-  padding-top: 4px;
-  padding-bottom: 4px;
-}
-
-#xagpbsrbgq .gt_title {
-  color: #333333;
-  font-size: 125%;
-  font-weight: initial;
-  padding-top: 4px;
-  padding-bottom: 4px;
-  padding-left: 5px;
-  padding-right: 5px;
-  border-bottom-color: #FFFFFF;
-  border-bottom-width: 0;
-}
-
-#xagpbsrbgq .gt_subtitle {
-  color: #333333;
-  font-size: 85%;
-  font-weight: initial;
-  padding-top: 3px;
-  padding-bottom: 5px;
-  padding-left: 5px;
-  padding-right: 5px;
-  border-top-color: #FFFFFF;
-  border-top-width: 0;
-}
-
-#xagpbsrbgq .gt_heading {
-  background-color: #FFFFFF;
-  text-align: center;
-  border-bottom-color: #FFFFFF;
-  border-left-style: none;
-  border-left-width: 1px;
-  border-left-color: #D3D3D3;
-  border-right-style: none;
-  border-right-width: 1px;
-  border-right-color: #D3D3D3;
-}
-
-#xagpbsrbgq .gt_bottom_border {
-  border-bottom-style: solid;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-}
-
-#xagpbsrbgq .gt_col_headings {
-  border-top-style: solid;
-  border-top-width: 2px;
-  border-top-color: #D3D3D3;
-  border-bottom-style: solid;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-  border-left-style: none;
-  border-left-width: 1px;
-  border-left-color: #D3D3D3;
-  border-right-style: none;
-  border-right-width: 1px;
-  border-right-color: #D3D3D3;
-}
-
-#xagpbsrbgq .gt_col_heading {
-  color: #333333;
-  background-color: #FFFFFF;
-  font-size: 100%;
-  font-weight: normal;
-  text-transform: inherit;
-  border-left-style: none;
-  border-left-width: 1px;
-  border-left-color: #D3D3D3;
-  border-right-style: none;
-  border-right-width: 1px;
-  border-right-color: #D3D3D3;
-  vertical-align: bottom;
-  padding-top: 5px;
-  padding-bottom: 6px;
-  padding-left: 5px;
-  padding-right: 5px;
-  overflow-x: hidden;
-}
-
-#xagpbsrbgq .gt_column_spanner_outer {
-  color: #333333;
-  background-color: #FFFFFF;
-  font-size: 100%;
-  font-weight: normal;
-  text-transform: inherit;
-  padding-top: 0;
-  padding-bottom: 0;
-  padding-left: 4px;
-  padding-right: 4px;
-}
-
-#xagpbsrbgq .gt_column_spanner_outer:first-child {
-  padding-left: 0;
-}
-
-#xagpbsrbgq .gt_column_spanner_outer:last-child {
-  padding-right: 0;
-}
-
-#xagpbsrbgq .gt_column_spanner {
-  border-bottom-style: solid;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-  vertical-align: bottom;
-  padding-top: 5px;
-  padding-bottom: 5px;
-  overflow-x: hidden;
-  display: inline-block;
-  width: 100%;
-}
-
-#xagpbsrbgq .gt_spanner_row {
-  border-bottom-style: hidden;
-}
-
-#xagpbsrbgq .gt_group_heading {
-  padding-top: 8px;
-  padding-bottom: 8px;
-  padding-left: 5px;
-  padding-right: 5px;
-  color: #333333;
-  background-color: #FFFFFF;
-  font-size: 100%;
-  font-weight: initial;
-  text-transform: inherit;
-  border-top-style: solid;
-  border-top-width: 2px;
-  border-top-color: #D3D3D3;
-  border-bottom-style: solid;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-  border-left-style: none;
-  border-left-width: 1px;
-  border-left-color: #D3D3D3;
-  border-right-style: none;
-  border-right-width: 1px;
-  border-right-color: #D3D3D3;
-  vertical-align: middle;
-  text-align: left;
-}
-
-#xagpbsrbgq .gt_empty_group_heading {
-  padding: 0.5px;
-  color: #333333;
-  background-color: #FFFFFF;
-  font-size: 100%;
-  font-weight: initial;
-  border-top-style: solid;
-  border-top-width: 2px;
-  border-top-color: #D3D3D3;
-  border-bottom-style: solid;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-  vertical-align: middle;
-}
-
-#xagpbsrbgq .gt_from_md > :first-child {
-  margin-top: 0;
-}
-
-#xagpbsrbgq .gt_from_md > :last-child {
-  margin-bottom: 0;
-}
-
-#xagpbsrbgq .gt_row {
-  padding-top: 8px;
-  padding-bottom: 8px;
-  padding-left: 5px;
-  padding-right: 5px;
-  margin: 10px;
-  border-top-style: solid;
-  border-top-width: 1px;
-  border-top-color: #D3D3D3;
-  border-left-style: none;
-  border-left-width: 1px;
-  border-left-color: #D3D3D3;
-  border-right-style: none;
-  border-right-width: 1px;
-  border-right-color: #D3D3D3;
-  vertical-align: middle;
-  overflow-x: hidden;
-}
-
-#xagpbsrbgq .gt_stub {
-  color: #333333;
-  background-color: #FFFFFF;
-  font-size: 100%;
-  font-weight: initial;
-  text-transform: inherit;
-  border-right-style: solid;
-  border-right-width: 2px;
-  border-right-color: #D3D3D3;
-  padding-left: 5px;
-  padding-right: 5px;
-}
-
-#xagpbsrbgq .gt_stub_row_group {
-  color: #333333;
-  background-color: #FFFFFF;
-  font-size: 100%;
-  font-weight: initial;
-  text-transform: inherit;
-  border-right-style: solid;
-  border-right-width: 2px;
-  border-right-color: #D3D3D3;
-  padding-left: 5px;
-  padding-right: 5px;
-  vertical-align: top;
-}
-
-#xagpbsrbgq .gt_row_group_first td {
-  border-top-width: 2px;
-}
-
-#xagpbsrbgq .gt_row_group_first th {
-  border-top-width: 2px;
-}
-
-#xagpbsrbgq .gt_summary_row {
-  color: #333333;
-  background-color: #FFFFFF;
-  text-transform: inherit;
-  padding-top: 8px;
-  padding-bottom: 8px;
-  padding-left: 5px;
-  padding-right: 5px;
-}
-
-#xagpbsrbgq .gt_first_summary_row {
-  border-top-style: solid;
-  border-top-color: #D3D3D3;
-}
-
-#xagpbsrbgq .gt_first_summary_row.thick {
-  border-top-width: 2px;
-}
-
-#xagpbsrbgq .gt_last_summary_row {
-  padding-top: 8px;
-  padding-bottom: 8px;
-  padding-left: 5px;
-  padding-right: 5px;
-  border-bottom-style: solid;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-}
-
-#xagpbsrbgq .gt_grand_summary_row {
-  color: #333333;
-  background-color: #FFFFFF;
-  text-transform: inherit;
-  padding-top: 8px;
-  padding-bottom: 8px;
-  padding-left: 5px;
-  padding-right: 5px;
-}
-
-#xagpbsrbgq .gt_first_grand_summary_row {
-  padding-top: 8px;
-  padding-bottom: 8px;
-  padding-left: 5px;
-  padding-right: 5px;
-  border-top-style: double;
-  border-top-width: 6px;
-  border-top-color: #D3D3D3;
-}
-
-#xagpbsrbgq .gt_last_grand_summary_row_top {
-  padding-top: 8px;
-  padding-bottom: 8px;
-  padding-left: 5px;
-  padding-right: 5px;
-  border-bottom-style: double;
-  border-bottom-width: 6px;
-  border-bottom-color: #D3D3D3;
-}
-
-#xagpbsrbgq .gt_striped {
-  background-color: rgba(128, 128, 128, 0.05);
-}
-
-#xagpbsrbgq .gt_table_body {
-  border-top-style: solid;
-  border-top-width: 2px;
-  border-top-color: #D3D3D3;
-  border-bottom-style: solid;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-}
-
-#xagpbsrbgq .gt_footnotes {
-  color: #333333;
-  background-color: #FFFFFF;
-  border-bottom-style: none;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-  border-left-style: none;
-  border-left-width: 2px;
-  border-left-color: #D3D3D3;
-  border-right-style: none;
-  border-right-width: 2px;
-  border-right-color: #D3D3D3;
-}
-
-#xagpbsrbgq .gt_footnote {
-  margin: 0px;
-  font-size: 90%;
-  padding-top: 4px;
-  padding-bottom: 4px;
-  padding-left: 5px;
-  padding-right: 5px;
-}
-
-#xagpbsrbgq .gt_sourcenotes {
-  color: #333333;
-  background-color: #FFFFFF;
-  border-bottom-style: none;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-  border-left-style: none;
-  border-left-width: 2px;
-  border-left-color: #D3D3D3;
-  border-right-style: none;
-  border-right-width: 2px;
-  border-right-color: #D3D3D3;
-}
-
-#xagpbsrbgq .gt_sourcenote {
-  font-size: 90%;
-  padding-top: 4px;
-  padding-bottom: 4px;
-  padding-left: 5px;
-  padding-right: 5px;
-}
-
-#xagpbsrbgq .gt_left {
-  text-align: left;
-}
-
-#xagpbsrbgq .gt_center {
-  text-align: center;
-}
-
-#xagpbsrbgq .gt_right {
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-}
-
-#xagpbsrbgq .gt_font_normal {
-  font-weight: normal;
-}
-
-#xagpbsrbgq .gt_font_bold {
-  font-weight: bold;
-}
-
-#xagpbsrbgq .gt_font_italic {
-  font-style: italic;
-}
-
-#xagpbsrbgq .gt_super {
-  font-size: 65%;
-}
-
-#xagpbsrbgq .gt_footnote_marks {
-  font-size: 75%;
-  vertical-align: 0.4em;
-  position: initial;
-}
-
-#xagpbsrbgq .gt_asterisk {
-  font-size: 100%;
-  vertical-align: 0;
-}
-
-#xagpbsrbgq .gt_indent_1 {
-  text-indent: 5px;
-}
-
-#xagpbsrbgq .gt_indent_2 {
-  text-indent: 10px;
-}
-
-#xagpbsrbgq .gt_indent_3 {
-  text-indent: 15px;
-}
-
-#xagpbsrbgq .gt_indent_4 {
-  text-indent: 20px;
-}
-
-#xagpbsrbgq .gt_indent_5 {
-  text-indent: 25px;
-}
-</style>
-<table class="gt_table" data-quarto-disable-processing="false" data-quarto-bootstrap="false">
-  <thead>
-    
-    <tr class="gt_col_headings">
-      <th class="gt_col_heading gt_columns_bottom_border gt_left" rowspan="1" colspan="1" scope="col" id="&lt;strong&gt;Characteristic&lt;/strong&gt;"><strong>Characteristic</strong></th>
-      <th class="gt_col_heading gt_columns_bottom_border gt_center" rowspan="1" colspan="1" scope="col" id="&lt;strong&gt;Beta&lt;/strong&gt;"><strong>Beta</strong></th>
-      <th class="gt_col_heading gt_columns_bottom_border gt_center" rowspan="1" colspan="1" scope="col" id="&lt;strong&gt;95% CI&lt;/strong&gt;"><strong>95% CI</strong></th>
-      <th class="gt_col_heading gt_columns_bottom_border gt_center" rowspan="1" colspan="1" scope="col" id="&lt;strong&gt;p-value&lt;/strong&gt;"><strong>p-value</strong></th>
-    </tr>
-  </thead>
-  <tbody class="gt_table_body">
-    <tr><td headers="label" class="gt_row gt_left">period</td>
-<td headers="estimate" class="gt_row gt_center">-0.09</td>
-<td headers="ci" class="gt_row gt_center">-0.59, 0.41</td>
-<td headers="p.value" class="gt_row gt_center">0.7</td></tr>
-    <tr><td headers="label" class="gt_row gt_left">rx</td>
-<td headers="estimate" class="gt_row gt_center">-0.73</td>
-<td headers="ci" class="gt_row gt_center">-1.7, 0.20</td>
-<td headers="p.value" class="gt_row gt_center">0.13</td></tr>
-    <tr><td headers="label" class="gt_row gt_left">period * rx</td>
-<td headers="estimate" class="gt_row gt_center">3.0</td>
-<td headers="ci" class="gt_row gt_center">2.2, 3.7</td>
-<td headers="p.value" class="gt_row gt_center"><0.001</td></tr>
-    <tr><td headers="label" class="gt_row gt_left">id:site.sd__(Intercept)</td>
-<td headers="estimate" class="gt_row gt_center">6.2</td>
-<td headers="ci" class="gt_row gt_center"></td>
-<td headers="p.value" class="gt_row gt_center"></td></tr>
-    <tr><td headers="label" class="gt_row gt_left">timeID:site.sd__(Intercept)</td>
-<td headers="estimate" class="gt_row gt_center">1.8</td>
-<td headers="ci" class="gt_row gt_center"></td>
-<td headers="p.value" class="gt_row gt_center"></td></tr>
-    <tr><td headers="label" class="gt_row gt_left">site.sd__(Intercept)</td>
-<td headers="estimate" class="gt_row gt_center">2.7</td>
-<td headers="ci" class="gt_row gt_center"></td>
-<td headers="p.value" class="gt_row gt_center"></td></tr>
-    <tr><td headers="label" class="gt_row gt_left">Residual.sd__Observation</td>
-<td headers="estimate" class="gt_row gt_center">4.1</td>
-<td headers="ci" class="gt_row gt_center"></td>
-<td headers="p.value" class="gt_row gt_center"></td></tr>
-  </tbody>
-  
-  
+<table>
+ <thead>
+  <tr>
+   <th style="text-align:left;"> **Characteristic** </th>
+   <th style="text-align:center;"> **Beta** </th>
+   <th style="text-align:center;"> **95% CI** </th>
+   <th style="text-align:center;"> **p-value** </th>
+  </tr>
+ </thead>
+<tbody>
+  <tr>
+   <td style="text-align:left;"> period </td>
+   <td style="text-align:center;"> -0.10 </td>
+   <td style="text-align:center;"> -0.63, 0.43 </td>
+   <td style="text-align:center;"> 0.7 </td>
+  </tr>
+  <tr>
+   <td style="text-align:left;"> rx </td>
+   <td style="text-align:center;"> 0.72 </td>
+   <td style="text-align:center;"> -0.21, 1.6 </td>
+   <td style="text-align:center;"> 0.13 </td>
+  </tr>
+  <tr>
+   <td style="text-align:left;"> period * rx </td>
+   <td style="text-align:center;"> 2.1 </td>
+   <td style="text-align:center;"> 1.3, 2.8 </td>
+   <td style="text-align:center;"> &lt;0.001 </td>
+  </tr>
+  <tr>
+   <td style="text-align:left;"> id:site.sd__(Intercept) </td>
+   <td style="text-align:center;"> 6.2 </td>
+   <td style="text-align:center;">  </td>
+   <td style="text-align:center;">  </td>
+  </tr>
+  <tr>
+   <td style="text-align:left;"> timeID:site.sd__(Intercept) </td>
+   <td style="text-align:center;"> 1.8 </td>
+   <td style="text-align:center;">  </td>
+   <td style="text-align:center;">  </td>
+  </tr>
+  <tr>
+   <td style="text-align:left;"> site.sd__(Intercept) </td>
+   <td style="text-align:center;"> 2.7 </td>
+   <td style="text-align:center;">  </td>
+   <td style="text-align:center;">  </td>
+  </tr>
+  <tr>
+   <td style="text-align:left;"> Residual.sd__Observation </td>
+   <td style="text-align:center;"> 4.1 </td>
+   <td style="text-align:center;">  </td>
+   <td style="text-align:center;">  </td>
+  </tr>
+</tbody>
 </table>
-</div>
-```
 
 #### Let's update the Design Effect
 
@@ -2010,7 +690,6 @@ n <- 30
 
 r <- (n * rho * rho_c + (1-rho) * rho_s) / (1 + (n-1) * rho)
 
-# And again, the design effect (and sample size requirement) is reduced:
 (des_effect <- (1 + (n - 1) * rho) * 2 * (1 - r))
 ```
 
@@ -2019,58 +698,41 @@ r <- (n * rho * rho_c + (1-rho) * rho_s) / (1 + (n-1) * rho)
 ```
 
 ```r
-## [1] 3.1
 des_effect * 350 / n
 ```
 
 ```
 ## [1] 36.60417
 ```
-
-```r
-## [1] 37
-
-# The desired number of sites is over 36, so I will round up to 38
-```
+We reduced the design effect from 5.35 to 4.3 to 3.14
+=> New Total Sample Size: 350 x 3.14 = 1099 participants across ca. 38 sites
+Instead of 350 x 4.3 = 1514 participants across ca. 52 sites when baseline period with cross-sectional
+Instead of 350 x 5.35 = 1872 participants across ca. 64 sites when no baseline period at all
 
 #### Let's confirm the power
-After calculating the design effect, we run a simulation to confirm the statistical power based on the specified number of sites (52) and participants per site (30). The goal is to check whether the p-value for the treatment effect (period*rx) is statistically significant in at least 80% of simulations.
 
 ```r
 replicate <- function() {
   dd <- crt_base(2.4, 38, 30, s_c = 6.8, s_cp = 2.8, s_s = 38, s_sp = 16.4)
   fit4 <-  lmer(y ~ period*rx + (1 | id:site) + (1|timeID:site) + (1 | site), data = dd)
-  
   coef(summary(fit4))["period:rx", "Pr(>|t|)"]
 }
 
-p_values <- mclapply(1:50, function(x) replicate(), mc.cores = 4) # increase once more computational capacity
+p_values <- mclapply(1:1000, function(x) replicate(), mc.cores = 8)
 
 mean(unlist(p_values) < 0.05)
 ```
 
 ```
-## [1] 0.76
-```
-
-```r
-## [1] 0.79
+## [1] 0.789
 ```
 
 #### Repeated Measurements - ANCOVA Model
-We may be able to reduce the number of clusters even further by changing the model so that we are comparing follow-up outcomes of the two treatment arms (as opposed to measuring the differences in changes as we just did). This model is
+We are able to reduce the number of clusters even further by changing the model so that we are comparing follow-up outcomes of the two treatment arms (as opposed to measuring the differences in changes as we just did). I.e. the usual "baseline-adjusted" model in trials:
 
-𝑌𝑖𝑗1 = 𝛼0 + 𝛾𝑌𝑖𝑗0 + 𝛿𝑍𝑗 + 𝑐𝑗 + 𝑠𝑖𝑗
+Yij(k=1) = a0 + yYij(k=0) + bZj + cj + sij, where
+yYij(k=0): Adjustment coefficient of baseline outcome for the same individual
 
-𝑌𝑖𝑗0: Baseline outcome for the same individual
-𝛾 = Adjustment coefficient for baseline values (typically close to 1 if baseline and follow-up outcomes are highly correlated).
-𝑍𝑗: Treatment assignment (0 = control, 1 = intervention). 
-𝛿:Treatment effect of interest.
-𝑐𝑗: Cluster-level random effect.
-𝑠𝑖𝑗: Subject-level random effect.
-
-
-Even though the estimation model has changed, I am using the exact same data generation process as before, with the same effect size and variance assumptions:
 
 ```r
 dd <- crt_base(effect = 2.4, nsites = 200, n = 100, 
@@ -2080,491 +742,53 @@ dobs <- dd[, .(site, rx, id, period, timeID, y)]
 dobs <- dcast(dobs, site + rx + id ~ period, value.var = "y")
 
 fit5 <- lmer(`1` ~ `0` + rx + (1 | site), data = dobs)
-tbl_regression(fit5, tidy_fun = broom.mixed::tidy)  %>% 
+tbl <- tbl_regression(fit5, tidy_fun = broom.mixed::tidy)  %>% 
   modify_footnote(ci ~ NA, abbreviation = TRUE)
+as_kable(tbl)
 ```
 
-```{=html}
-<div id="ppymuatefz" style="padding-left:0px;padding-right:0px;padding-top:10px;padding-bottom:10px;overflow-x:auto;overflow-y:auto;width:auto;height:auto;">
-<style>#ppymuatefz table {
-  font-family: system-ui, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
-
-#ppymuatefz thead, #ppymuatefz tbody, #ppymuatefz tfoot, #ppymuatefz tr, #ppymuatefz td, #ppymuatefz th {
-  border-style: none;
-}
-
-#ppymuatefz p {
-  margin: 0;
-  padding: 0;
-}
-
-#ppymuatefz .gt_table {
-  display: table;
-  border-collapse: collapse;
-  line-height: normal;
-  margin-left: auto;
-  margin-right: auto;
-  color: #333333;
-  font-size: 16px;
-  font-weight: normal;
-  font-style: normal;
-  background-color: #FFFFFF;
-  width: auto;
-  border-top-style: solid;
-  border-top-width: 2px;
-  border-top-color: #A8A8A8;
-  border-right-style: none;
-  border-right-width: 2px;
-  border-right-color: #D3D3D3;
-  border-bottom-style: solid;
-  border-bottom-width: 2px;
-  border-bottom-color: #A8A8A8;
-  border-left-style: none;
-  border-left-width: 2px;
-  border-left-color: #D3D3D3;
-}
-
-#ppymuatefz .gt_caption {
-  padding-top: 4px;
-  padding-bottom: 4px;
-}
-
-#ppymuatefz .gt_title {
-  color: #333333;
-  font-size: 125%;
-  font-weight: initial;
-  padding-top: 4px;
-  padding-bottom: 4px;
-  padding-left: 5px;
-  padding-right: 5px;
-  border-bottom-color: #FFFFFF;
-  border-bottom-width: 0;
-}
-
-#ppymuatefz .gt_subtitle {
-  color: #333333;
-  font-size: 85%;
-  font-weight: initial;
-  padding-top: 3px;
-  padding-bottom: 5px;
-  padding-left: 5px;
-  padding-right: 5px;
-  border-top-color: #FFFFFF;
-  border-top-width: 0;
-}
-
-#ppymuatefz .gt_heading {
-  background-color: #FFFFFF;
-  text-align: center;
-  border-bottom-color: #FFFFFF;
-  border-left-style: none;
-  border-left-width: 1px;
-  border-left-color: #D3D3D3;
-  border-right-style: none;
-  border-right-width: 1px;
-  border-right-color: #D3D3D3;
-}
-
-#ppymuatefz .gt_bottom_border {
-  border-bottom-style: solid;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-}
-
-#ppymuatefz .gt_col_headings {
-  border-top-style: solid;
-  border-top-width: 2px;
-  border-top-color: #D3D3D3;
-  border-bottom-style: solid;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-  border-left-style: none;
-  border-left-width: 1px;
-  border-left-color: #D3D3D3;
-  border-right-style: none;
-  border-right-width: 1px;
-  border-right-color: #D3D3D3;
-}
-
-#ppymuatefz .gt_col_heading {
-  color: #333333;
-  background-color: #FFFFFF;
-  font-size: 100%;
-  font-weight: normal;
-  text-transform: inherit;
-  border-left-style: none;
-  border-left-width: 1px;
-  border-left-color: #D3D3D3;
-  border-right-style: none;
-  border-right-width: 1px;
-  border-right-color: #D3D3D3;
-  vertical-align: bottom;
-  padding-top: 5px;
-  padding-bottom: 6px;
-  padding-left: 5px;
-  padding-right: 5px;
-  overflow-x: hidden;
-}
-
-#ppymuatefz .gt_column_spanner_outer {
-  color: #333333;
-  background-color: #FFFFFF;
-  font-size: 100%;
-  font-weight: normal;
-  text-transform: inherit;
-  padding-top: 0;
-  padding-bottom: 0;
-  padding-left: 4px;
-  padding-right: 4px;
-}
-
-#ppymuatefz .gt_column_spanner_outer:first-child {
-  padding-left: 0;
-}
-
-#ppymuatefz .gt_column_spanner_outer:last-child {
-  padding-right: 0;
-}
-
-#ppymuatefz .gt_column_spanner {
-  border-bottom-style: solid;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-  vertical-align: bottom;
-  padding-top: 5px;
-  padding-bottom: 5px;
-  overflow-x: hidden;
-  display: inline-block;
-  width: 100%;
-}
-
-#ppymuatefz .gt_spanner_row {
-  border-bottom-style: hidden;
-}
-
-#ppymuatefz .gt_group_heading {
-  padding-top: 8px;
-  padding-bottom: 8px;
-  padding-left: 5px;
-  padding-right: 5px;
-  color: #333333;
-  background-color: #FFFFFF;
-  font-size: 100%;
-  font-weight: initial;
-  text-transform: inherit;
-  border-top-style: solid;
-  border-top-width: 2px;
-  border-top-color: #D3D3D3;
-  border-bottom-style: solid;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-  border-left-style: none;
-  border-left-width: 1px;
-  border-left-color: #D3D3D3;
-  border-right-style: none;
-  border-right-width: 1px;
-  border-right-color: #D3D3D3;
-  vertical-align: middle;
-  text-align: left;
-}
-
-#ppymuatefz .gt_empty_group_heading {
-  padding: 0.5px;
-  color: #333333;
-  background-color: #FFFFFF;
-  font-size: 100%;
-  font-weight: initial;
-  border-top-style: solid;
-  border-top-width: 2px;
-  border-top-color: #D3D3D3;
-  border-bottom-style: solid;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-  vertical-align: middle;
-}
-
-#ppymuatefz .gt_from_md > :first-child {
-  margin-top: 0;
-}
-
-#ppymuatefz .gt_from_md > :last-child {
-  margin-bottom: 0;
-}
-
-#ppymuatefz .gt_row {
-  padding-top: 8px;
-  padding-bottom: 8px;
-  padding-left: 5px;
-  padding-right: 5px;
-  margin: 10px;
-  border-top-style: solid;
-  border-top-width: 1px;
-  border-top-color: #D3D3D3;
-  border-left-style: none;
-  border-left-width: 1px;
-  border-left-color: #D3D3D3;
-  border-right-style: none;
-  border-right-width: 1px;
-  border-right-color: #D3D3D3;
-  vertical-align: middle;
-  overflow-x: hidden;
-}
-
-#ppymuatefz .gt_stub {
-  color: #333333;
-  background-color: #FFFFFF;
-  font-size: 100%;
-  font-weight: initial;
-  text-transform: inherit;
-  border-right-style: solid;
-  border-right-width: 2px;
-  border-right-color: #D3D3D3;
-  padding-left: 5px;
-  padding-right: 5px;
-}
-
-#ppymuatefz .gt_stub_row_group {
-  color: #333333;
-  background-color: #FFFFFF;
-  font-size: 100%;
-  font-weight: initial;
-  text-transform: inherit;
-  border-right-style: solid;
-  border-right-width: 2px;
-  border-right-color: #D3D3D3;
-  padding-left: 5px;
-  padding-right: 5px;
-  vertical-align: top;
-}
-
-#ppymuatefz .gt_row_group_first td {
-  border-top-width: 2px;
-}
-
-#ppymuatefz .gt_row_group_first th {
-  border-top-width: 2px;
-}
-
-#ppymuatefz .gt_summary_row {
-  color: #333333;
-  background-color: #FFFFFF;
-  text-transform: inherit;
-  padding-top: 8px;
-  padding-bottom: 8px;
-  padding-left: 5px;
-  padding-right: 5px;
-}
-
-#ppymuatefz .gt_first_summary_row {
-  border-top-style: solid;
-  border-top-color: #D3D3D3;
-}
-
-#ppymuatefz .gt_first_summary_row.thick {
-  border-top-width: 2px;
-}
-
-#ppymuatefz .gt_last_summary_row {
-  padding-top: 8px;
-  padding-bottom: 8px;
-  padding-left: 5px;
-  padding-right: 5px;
-  border-bottom-style: solid;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-}
-
-#ppymuatefz .gt_grand_summary_row {
-  color: #333333;
-  background-color: #FFFFFF;
-  text-transform: inherit;
-  padding-top: 8px;
-  padding-bottom: 8px;
-  padding-left: 5px;
-  padding-right: 5px;
-}
-
-#ppymuatefz .gt_first_grand_summary_row {
-  padding-top: 8px;
-  padding-bottom: 8px;
-  padding-left: 5px;
-  padding-right: 5px;
-  border-top-style: double;
-  border-top-width: 6px;
-  border-top-color: #D3D3D3;
-}
-
-#ppymuatefz .gt_last_grand_summary_row_top {
-  padding-top: 8px;
-  padding-bottom: 8px;
-  padding-left: 5px;
-  padding-right: 5px;
-  border-bottom-style: double;
-  border-bottom-width: 6px;
-  border-bottom-color: #D3D3D3;
-}
-
-#ppymuatefz .gt_striped {
-  background-color: rgba(128, 128, 128, 0.05);
-}
-
-#ppymuatefz .gt_table_body {
-  border-top-style: solid;
-  border-top-width: 2px;
-  border-top-color: #D3D3D3;
-  border-bottom-style: solid;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-}
-
-#ppymuatefz .gt_footnotes {
-  color: #333333;
-  background-color: #FFFFFF;
-  border-bottom-style: none;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-  border-left-style: none;
-  border-left-width: 2px;
-  border-left-color: #D3D3D3;
-  border-right-style: none;
-  border-right-width: 2px;
-  border-right-color: #D3D3D3;
-}
-
-#ppymuatefz .gt_footnote {
-  margin: 0px;
-  font-size: 90%;
-  padding-top: 4px;
-  padding-bottom: 4px;
-  padding-left: 5px;
-  padding-right: 5px;
-}
-
-#ppymuatefz .gt_sourcenotes {
-  color: #333333;
-  background-color: #FFFFFF;
-  border-bottom-style: none;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-  border-left-style: none;
-  border-left-width: 2px;
-  border-left-color: #D3D3D3;
-  border-right-style: none;
-  border-right-width: 2px;
-  border-right-color: #D3D3D3;
-}
-
-#ppymuatefz .gt_sourcenote {
-  font-size: 90%;
-  padding-top: 4px;
-  padding-bottom: 4px;
-  padding-left: 5px;
-  padding-right: 5px;
-}
-
-#ppymuatefz .gt_left {
-  text-align: left;
-}
-
-#ppymuatefz .gt_center {
-  text-align: center;
-}
-
-#ppymuatefz .gt_right {
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-}
-
-#ppymuatefz .gt_font_normal {
-  font-weight: normal;
-}
-
-#ppymuatefz .gt_font_bold {
-  font-weight: bold;
-}
-
-#ppymuatefz .gt_font_italic {
-  font-style: italic;
-}
-
-#ppymuatefz .gt_super {
-  font-size: 65%;
-}
-
-#ppymuatefz .gt_footnote_marks {
-  font-size: 75%;
-  vertical-align: 0.4em;
-  position: initial;
-}
-
-#ppymuatefz .gt_asterisk {
-  font-size: 100%;
-  vertical-align: 0;
-}
-
-#ppymuatefz .gt_indent_1 {
-  text-indent: 5px;
-}
-
-#ppymuatefz .gt_indent_2 {
-  text-indent: 10px;
-}
-
-#ppymuatefz .gt_indent_3 {
-  text-indent: 15px;
-}
-
-#ppymuatefz .gt_indent_4 {
-  text-indent: 20px;
-}
-
-#ppymuatefz .gt_indent_5 {
-  text-indent: 25px;
-}
-</style>
-<table class="gt_table" data-quarto-disable-processing="false" data-quarto-bootstrap="false">
-  <thead>
-    
-    <tr class="gt_col_headings">
-      <th class="gt_col_heading gt_columns_bottom_border gt_left" rowspan="1" colspan="1" scope="col" id="&lt;strong&gt;Characteristic&lt;/strong&gt;"><strong>Characteristic</strong></th>
-      <th class="gt_col_heading gt_columns_bottom_border gt_center" rowspan="1" colspan="1" scope="col" id="&lt;strong&gt;Beta&lt;/strong&gt;"><strong>Beta</strong></th>
-      <th class="gt_col_heading gt_columns_bottom_border gt_center" rowspan="1" colspan="1" scope="col" id="&lt;strong&gt;95% CI&lt;/strong&gt;"><strong>95% CI</strong></th>
-      <th class="gt_col_heading gt_columns_bottom_border gt_center" rowspan="1" colspan="1" scope="col" id="&lt;strong&gt;p-value&lt;/strong&gt;"><strong>p-value</strong></th>
-    </tr>
-  </thead>
-  <tbody class="gt_table_body">
-    <tr><td headers="label" class="gt_row gt_left">0</td>
-<td headers="estimate" class="gt_row gt_center">0.69</td>
-<td headers="ci" class="gt_row gt_center">0.68, 0.70</td>
-<td headers="p.value" class="gt_row gt_center"><0.001</td></tr>
-    <tr><td headers="label" class="gt_row gt_left">rx</td>
-<td headers="estimate" class="gt_row gt_center">2.1</td>
-<td headers="ci" class="gt_row gt_center">1.5, 2.8</td>
-<td headers="p.value" class="gt_row gt_center"><0.001</td></tr>
-    <tr><td headers="label" class="gt_row gt_left">site.sd__(Intercept)</td>
-<td headers="estimate" class="gt_row gt_center">2.2</td>
-<td headers="ci" class="gt_row gt_center"></td>
-<td headers="p.value" class="gt_row gt_center"></td></tr>
-    <tr><td headers="label" class="gt_row gt_left">Residual.sd__Observation</td>
-<td headers="estimate" class="gt_row gt_center">5.2</td>
-<td headers="ci" class="gt_row gt_center"></td>
-<td headers="p.value" class="gt_row gt_center"></td></tr>
-  </tbody>
-  
-  
+<table>
+ <thead>
+  <tr>
+   <th style="text-align:left;"> **Characteristic** </th>
+   <th style="text-align:center;"> **Beta** </th>
+   <th style="text-align:center;"> **95% CI** </th>
+   <th style="text-align:center;"> **p-value** </th>
+  </tr>
+ </thead>
+<tbody>
+  <tr>
+   <td style="text-align:left;"> 0 </td>
+   <td style="text-align:center;"> 0.69 </td>
+   <td style="text-align:center;"> 0.68, 0.70 </td>
+   <td style="text-align:center;"> &lt;0.001 </td>
+  </tr>
+  <tr>
+   <td style="text-align:left;"> rx </td>
+   <td style="text-align:center;"> 2.0 </td>
+   <td style="text-align:center;"> 1.3, 2.7 </td>
+   <td style="text-align:center;"> &lt;0.001 </td>
+  </tr>
+  <tr>
+   <td style="text-align:left;"> site.sd__(Intercept) </td>
+   <td style="text-align:center;"> 2.3 </td>
+   <td style="text-align:center;">  </td>
+   <td style="text-align:center;">  </td>
+  </tr>
+  <tr>
+   <td style="text-align:left;"> Residual.sd__Observation </td>
+   <td style="text-align:center;"> 5.2 </td>
+   <td style="text-align:center;">  </td>
+   <td style="text-align:center;">  </td>
+  </tr>
+</tbody>
 </table>
-</div>
-```
 
 #### Let's update the Design Effect
-Teerenstra et al derived an alternative design effect that is specific to the ANCOVA model:
+Teerenstra et al. also derived an alternative design effect that is specific to the ANCOVA model:
 
-(1+(𝑛−1)𝜌)(1−𝑟2)
-
-where 𝑟 is the same as before. Since (1−𝑟2) < 2(1−𝑟), 0≤𝑟<1, this will be a reduction from the earlier model.
+DEFF = (1 + (n−1) * ICC) * (1 − r^2)
+=> this will reduce the design effect further
 
 ```r
 (des_effect <- (1 + (n - 1) * rho) * (1 - r^2))
@@ -2575,1432 +799,850 @@ where 𝑟 is the same as before. Since (1−𝑟2) < 2(1−𝑟), 0≤𝑟<1, t
 ```
 
 ```r
-## [1] 2.7
 des_effect * 350 / n
 ```
 
 ```
 ## [1] 31.23755
 ```
-
-```r
-## [1] 31
-```
+We reduced the design effect from 5.35 to 4.3 to 3.14 to 2.68
+=> New Total Sample Size: 350 x 2.68 = 938 participants across ca. 32 sites (when baseline-adjusted)
+Instead of 350 x 3.14 = 1099 participants across ca. 38 sites when baseline period with closed cohort
+Instead of 350 x 4.3 = 1514 participants across ca. 52 sites when baseline period with cross-sectional
+Instead of 350 x 5.35 = 1872 participants across ca. 64 sites when no baseline period at all
 
 #### Let's confirm the power
 
 ```r
 replicate <- function() {
-  
   dd <- crt_base(2.4, 32, 30, s_c = 6.8, s_cp = 2.8, s_s = 38, s_sp = 16.4)
   dobs <- dd[, .(site, rx, id, period, timeID, y)]
   dobs <- dcast(dobs, site + rx + id ~ period, value.var = "y")
-
   fit5 <- lmer(`1` ~ `0` + rx + (1 | site), data = dobs)
   coef(summary(fit5))["rx", "Pr(>|t|)"]
 }
 
-p_values <- mclapply(1:1000, function(x) replicate(), mc.cores = 4)
+p_values <- mclapply(1:1000, function(x) replicate(), mc.cores = 8)
 
 mean(unlist(p_values) < 0.05)
 ```
 
 ```
-## [1] 0.78
-```
-
-```r
-## [1] 0.78
+## [1] 0.802
 ```
 
 
 ## Simulation | Binary outcome
-### First, start with a simple individual randomized trial
-Requirements:
-power: 80%
-alpha: 5%
-Baseline uptake PrEP: 30% (see survey data)
-Increase in uptake through intervention: 10%
+Hypothetical cluster randomized trial (CRT), on the example of MOCA
+Interventions on the level of health care workers to reduce antibiotic prescriptions at health facilities
 
+Control: Standard of care
+Intervention 1: eHealth tool
+Intervention 2: eHealth tool + AMR stewardship clubs
 
-```r
-# First, calculate the sample size for this individual RCT, using pwr, two-sided (effect could go either way)
-alpha <- 0.05 # alpha level
-power <- 0.80 # power
-p_cont <- 0.30 # Proportion of outcome in the control group
-p_int <- 0.40 # Proportion of outcome in the intervention group
+Important features and fixed parameters:
+- Max. 39 clusters (health centers) due to feasibility/budget
+- Binary outcome: Proportion of patients prescribed an antibiotic at first presentation to care
+- Baseline prescription rate at control clusters: 75%, from pilot data
+- Delta Control to Intervention 1: 25 percentage points, based on prior studies in similar setting and clinical relevance
 
-power.prop.test(p1 = p_cont, p2 = p_int, power = power, sig.level = alpha)
-```
+- Power min. 80%
+- ICC for AB prescription: 0.20, based on previous studies in same setting
+- Mean cluster size: 150 (to achieve within 2-3 month per cluster, at the end of the 6m implementation period)
+- The ratio of standard deviation of cluster sizes to mean of cluster sizes is about 0.6 -> this would mess up everything
+- => We use random sampling to standardize the mean cluster size to 150 across all sites
 
-```
-## 
-##      Two-sample comparison of proportions power calculation 
-## 
-##               n = 355.9428
-##              p1 = 0.3
-##              p2 = 0.4
-##       sig.level = 0.05
-##           power = 0.8
-##     alternative = two.sided
-## 
-## NOTE: n is number in *each* group
-```
+Design considerations:
+- We can argue against multiplicity in this setup
+- For now, focus on the main 2-arm comparison: Control to Intervention 1 with a delta of 25%
+
+### First, let's start with a simple individual randomized trial
 
 ```r
-ss_ind_1arm <- pwr.2p.test(h = ES.h(p_int, p_cont), 
-                           sig.level = alpha, 
-                           power = power)
-ss_ind <- ss_ind_1arm$n * 2
-cat("Total sample size individual RCT, pwr:", round(ss_ind, 0))
+# Parameters
+p_C <- 0.75 # control: Baseline prescription rate
+p_I1 <- 0.50 # int 1: 25pp reduction
+power <- 0.80 # desired power
+alpha <- 0.05 # apply bonferroni correction if adjustment for multiplicity
+
+# Effect sizes
+h_I1_C <- ES.h(p1 = p_I1, p2 = p_C)
+
+cat("Cohen's h for I1 vs Control:", round(h_I1_C, 3), "\n")
 ```
 
 ```
-## Total sample size individual RCT, pwr: 711
+## Cohen's h for I1 vs Control: -0.524
 ```
 
 ```r
-## As a comparison, use "manual" formula instead of pwr package
-Z_alpha_half <- qnorm(1 - alpha / 2) # translate into Z-distribution -> equals 0.975 (95% CI)
-Z_beta <- qnorm(power)
-ss_ind_1arm_man <- ((Z_alpha_half + Z_beta)^2 * (p_int * (1 - p_int) + p_cont * (1 - p_cont))) / (p_int - p_cont)^2
+# => reduction of mind. 25% is a Cohen's h of over 0.5 -> medium to large effect
 
-ss_ind_man <- ss_ind_1arm_man * 2
-# cat("Total sample size individual RCT, manual:", ss_ind_man) # total sample size
-# => very similar result, use pwr result going forward
-
-cat("Total sample size individual RCT, manual:", round(ss_ind_man, 0))
+# Sample size first pair-wise comparison (I1 vs C)
+ss_I1_C <- pwr.2p.test(h = h_I1_C, sig.level = alpha, power = power)
+cat("Sample size per arm (I1 vs C):", ceiling(ss_I1_C$n), "\n")
 ```
 
 ```
-## Total sample size individual RCT, manual: 706
+## Sample size per arm (I1 vs C): 58
 ```
-
-#### Let's generate the data
 
 ```r
-simple_rct_binary_probs <- function(N, p0, p1) {
+n_per_arm <- ceiling(ss_I1_C$n)
+n_total_2arm <- n_per_arm * 2
+
+cat("Total sample size:", n_total_2arm)
+```
+
+```
+## Total sample size: 116
+```
+A reduction of at least 25% percentage points is a Cohen's h of over 0.5 => medium effect.
+
+### Now, let's move to a CRT design
+We have a binary outcome and will use a logistic model to model the log-odds (logit) of success. We convert the linear predictor into a probability using the inverse logit (logistic function): 
+P(Y_ij = 1) = e^ηij / 1 + e^ηij
+
+The probability of success is defined using a logistic model: 
+ηij = b1 * rx_j + c_j (the linear predictor for individual i in cluster j)
+c_j = the random cluster effect (cluster-specific deviation from the overall average)
+b1 = the regression coefficient,
+rx_j = the treatment status of cluster j
+
+Let's figure out the ICC:
+ICC = Between-site variance / Total variance, whereby the between-site variance represents the clustering. 
+
+In logistic models, the residual (individual-level) variance is fixed at:
+π^2 / 3 = 3.29
+
+So, the between-site variance (σ^2_c), i.e. cluster-level noise, is what we need, and is therefore derived as:
+
+ICC = σ^2_c / (σ^2_c + (π^2 / 3))
+
+If ICC is assumed at 0.20, then σ^2_c is ca. 0.822
+
+(If there’s additional within-site variation over time, i.e. baseline period, we include σ^2_c_p, typically as a fraction of σ^2_c -> for a later stage).
+
+#### Let's generate the data, for a simple two-arm CRT with fixed cluster size, according to the parameters above
+
+```r
+# with fixed cluster size, simple
+crt_binary_twoarm_fixedsize <- function(n_clusters, p0, p1, ICC, cluster_size_mean) {
   
-  # Step 1: Assign treatment randomly (1:1 allocation)
-  defS <- defData(varname = "rx", formula = "1;1", dist = "trtAssign")
-  dd <- genData(N, defS)
+  # Convert proportions to log-odds
+  logit_p0 <- log(p0 / (1 - p0))
+  logit_p1 <- log(p1 / (1 - p1))
+  beta1 <- logit_p1 - logit_p0
+
+  # Define cluster-level treatment assignment and random effect
+  defC <- defData(varname = "rx", formula = "1;1", dist = "trtAssign")
   
-  # Step 2: Assign binary outcome (success/failure) for each group using Bernoulli distribution
-  # Control group (rx == 0)
-  dd[rx == 0, y := rbinom(sum(rx == 0), 1, p0)]
-  # Treatment group (rx == 1)
-  dd[rx == 1, y := rbinom(sum(rx == 1), 1, p1)]
-  
+  # Calculate between-cluster variance to achieve desired ICC
+  sigma2_c <- ICC * (pi^2 / 3) / (1 - ICC)
+  cat("Between-site variance (σ^2_c):", sigma2_c, "\n")
+  defC <- defData(defC, varname = "c", formula = "0", variance = sigma2_c, dist = "normal")
+
+  # Generate clusters
+  dc <- genData(n_clusters, defC, id = "site")
+
+  # Use constant cluster size
+  cluster_sizes <- rep(cluster_size_mean, n_clusters)
+  dd <- genCluster(dc, "site", cluster_sizes, "id")
+
+  # Define the binary outcome with logistic link
+  defS <- defDataAdd(
+    varname = "y", 
+    formula = paste0("c + ", logit_p0, " + ", beta1, " * (rx == 1)"),
+    dist = "binary", link = "logit"
+  )
+  dd <- addColumns(defS, dd)
+
   return(dd)
 }
 
-# Generate data
-dd_binary <- simple_rct_binary_probs(1000, p0 = 0.3, p1 = 0.4)
+# with varying cluster size -> for later purposes
+crt_binary_twoarm_varsize <- function(n_clusters, p0, p1, ICC, cluster_size_mean, CV) {
+  
+  logit_p0 <- log(p0 / (1 - p0))
+  logit_p1 <- log(p1 / (1 - p1))
+  beta1 <- logit_p1 - logit_p0
 
+  # Treatment variable "rx"
+  defC <- defData(varname = "rx", formula = "1;1", dist = "trtAssign")
+  
+  # Varying cluster sizes, two options:
+  
+  # (1) Normal distribution and calculate SD from CV, as per formula
+  # cluster_size_sd <- CV * cluster_size_mean
+  # cluster_sizes <- round(rnorm(n_clusters, mean = cluster_size_mean, sd = cluster_size_sd)) # ensure no empty nor negative cluster sizes
+  
+  # (2) Use a gamma distribution to simulate strictly positive, slightly right-skewed cluster sizes (as common in real data, i.e., few large ones)
+  shape <- 1 / CV^2
+  scale <- cluster_size_mean * CV^2
+  cluster_sizes <- round(rgamma(n_clusters, shape = shape, scale = scale))
+
+  # ICC and cluster-level random effect
+  sigma2_c <- ICC * (pi^2 / 3) / (1 - ICC)
+  cat("Between-site variance (σ^2c):", sigma2_c, "\n")
+  defC <- defData(defC, varname = "c", formula = "0", variance = sigma2_c, dist = "normal")
+
+  # Generate the clusters, variable "site"
+  dc <- genData(n_clusters, defC, id = "site")
+
+  # Generate the individuals, variable "id"
+  dd <- genCluster(dc, "site", cluster_sizes, "id")
+
+  # Add individual-level noise
+  dd <- addColumns(defDataAdd(varname = "noise", formula = "0", variance = 1.0, dist = "normal"), dd)
+
+  # Outcome model, based on individual-level outcomes, variable "y" (y = 1/0)
+  defS <- defDataAdd(varname = "y", 
+                     formula = paste0("c + noise + ", logit_p0, " + ", beta1, " * (rx == 1)"),
+                     dist = "binary", link = "logit")
+  dd <- addColumns(defS, dd)
+
+  return(dd)
+}
+
+set.seed(342)
+
+dd_sim <- crt_binary_twoarm_fixedsize(
+  n_clusters = 26, 
+  p0 = 0.75, 
+  p1 = 0.50,
+  ICC = 0.20, 
+  cluster_size_mean = 150
+)
+```
+
+```
+## Between-site variance (σ^2_c): 0.822467
+```
+
+```r
+## Check the simulated dataset
+table(dd_sim$rx, dd_sim$site)
+```
+
+```
+##    
+##       1   2   3   4   5   6   7   8   9  10  11  12  13  14  15  16  17  18  19
+##   0 150 150   0   0 150 150 150 150   0   0 150 150   0   0   0   0 150   0 150
+##   1   0   0 150 150   0   0   0   0 150 150   0   0 150 150 150 150   0 150   0
+##    
+##      20  21  22  23  24  25  26
+##   0 150   0   0   0 150   0 150
+##   1   0 150 150 150   0 150   0
+```
+
+```r
+table(dd_sim$rx)
+```
+
+```
+## 
+##    0    1 
+## 1950 1950
+```
+
+```r
 # Check the proportions
-prop_control <- mean(dd_binary$y[dd_binary$rx == 0])  
-prop_treatment <- mean(dd_binary$y[dd_binary$rx == 1])
+prop_1 <- mean(dd_sim$y[dd_sim$rx == 0])  
+prop_2 <- mean(dd_sim$y[dd_sim$rx == 1])
 
-cat("Observed control success rate:", prop_control, "\n")
-```
-
-```
-## Observed control success rate: 0.318
-```
-
-```r
-cat("Observed treatment success rate:", prop_treatment, "\n")
-```
-
-```
-## Observed treatment success rate: 0.404
-```
-
-```r
-# Visualizing Binary Outcome Distribution
-ggplot(dd_binary, aes(x = factor(rx), fill = factor(y))) + 
-  geom_bar(position = "fill", color = "black") +  # Stacked bar plot showing proportion of successes (y=1)
-  scale_fill_manual(values = c("gray", "blue"), labels = c("No PrEP", "PrEP Uptake")) +
+# Visualize the outcome distribution for each treatment group
+ggplot(dd_sim, aes(x = factor(rx), fill = factor(y))) + 
+  geom_bar(position = "fill", color = "black") + 
+  scale_fill_manual(values = c("gray", "blue"), labels = c("No AB prescribed", "AB prescribed")) +
   labs(x = "Treatment Group", y = "Proportion", fill = "Outcome") +
   theme_minimal() +
-  ggtitle("Proportion of PrEP Uptake by Treatment Group")
+  ggtitle("Proportion of reaching outcome by treatment group")
 ```
 
 ![](CRT_baseline_period_files/figure-html/unnamed-chunk-22-1.png)<!-- -->
 
-#### Let's estimate the effect size
-
 ```r
-fit_logit <- glm(y ~ rx, data = dd_binary, family = binomial)
-tbl_regression(fit_logit) %>% 
-  modify_footnote(ci ~ NA, abbreviation = TRUE)
-```
-
-```{=html}
-<div id="akjkmiwvfq" style="padding-left:0px;padding-right:0px;padding-top:10px;padding-bottom:10px;overflow-x:auto;overflow-y:auto;width:auto;height:auto;">
-<style>#akjkmiwvfq table {
-  font-family: system-ui, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
-
-#akjkmiwvfq thead, #akjkmiwvfq tbody, #akjkmiwvfq tfoot, #akjkmiwvfq tr, #akjkmiwvfq td, #akjkmiwvfq th {
-  border-style: none;
-}
-
-#akjkmiwvfq p {
-  margin: 0;
-  padding: 0;
-}
-
-#akjkmiwvfq .gt_table {
-  display: table;
-  border-collapse: collapse;
-  line-height: normal;
-  margin-left: auto;
-  margin-right: auto;
-  color: #333333;
-  font-size: 16px;
-  font-weight: normal;
-  font-style: normal;
-  background-color: #FFFFFF;
-  width: auto;
-  border-top-style: solid;
-  border-top-width: 2px;
-  border-top-color: #A8A8A8;
-  border-right-style: none;
-  border-right-width: 2px;
-  border-right-color: #D3D3D3;
-  border-bottom-style: solid;
-  border-bottom-width: 2px;
-  border-bottom-color: #A8A8A8;
-  border-left-style: none;
-  border-left-width: 2px;
-  border-left-color: #D3D3D3;
-}
-
-#akjkmiwvfq .gt_caption {
-  padding-top: 4px;
-  padding-bottom: 4px;
-}
-
-#akjkmiwvfq .gt_title {
-  color: #333333;
-  font-size: 125%;
-  font-weight: initial;
-  padding-top: 4px;
-  padding-bottom: 4px;
-  padding-left: 5px;
-  padding-right: 5px;
-  border-bottom-color: #FFFFFF;
-  border-bottom-width: 0;
-}
-
-#akjkmiwvfq .gt_subtitle {
-  color: #333333;
-  font-size: 85%;
-  font-weight: initial;
-  padding-top: 3px;
-  padding-bottom: 5px;
-  padding-left: 5px;
-  padding-right: 5px;
-  border-top-color: #FFFFFF;
-  border-top-width: 0;
-}
-
-#akjkmiwvfq .gt_heading {
-  background-color: #FFFFFF;
-  text-align: center;
-  border-bottom-color: #FFFFFF;
-  border-left-style: none;
-  border-left-width: 1px;
-  border-left-color: #D3D3D3;
-  border-right-style: none;
-  border-right-width: 1px;
-  border-right-color: #D3D3D3;
-}
-
-#akjkmiwvfq .gt_bottom_border {
-  border-bottom-style: solid;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-}
-
-#akjkmiwvfq .gt_col_headings {
-  border-top-style: solid;
-  border-top-width: 2px;
-  border-top-color: #D3D3D3;
-  border-bottom-style: solid;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-  border-left-style: none;
-  border-left-width: 1px;
-  border-left-color: #D3D3D3;
-  border-right-style: none;
-  border-right-width: 1px;
-  border-right-color: #D3D3D3;
-}
-
-#akjkmiwvfq .gt_col_heading {
-  color: #333333;
-  background-color: #FFFFFF;
-  font-size: 100%;
-  font-weight: normal;
-  text-transform: inherit;
-  border-left-style: none;
-  border-left-width: 1px;
-  border-left-color: #D3D3D3;
-  border-right-style: none;
-  border-right-width: 1px;
-  border-right-color: #D3D3D3;
-  vertical-align: bottom;
-  padding-top: 5px;
-  padding-bottom: 6px;
-  padding-left: 5px;
-  padding-right: 5px;
-  overflow-x: hidden;
-}
-
-#akjkmiwvfq .gt_column_spanner_outer {
-  color: #333333;
-  background-color: #FFFFFF;
-  font-size: 100%;
-  font-weight: normal;
-  text-transform: inherit;
-  padding-top: 0;
-  padding-bottom: 0;
-  padding-left: 4px;
-  padding-right: 4px;
-}
-
-#akjkmiwvfq .gt_column_spanner_outer:first-child {
-  padding-left: 0;
-}
-
-#akjkmiwvfq .gt_column_spanner_outer:last-child {
-  padding-right: 0;
-}
-
-#akjkmiwvfq .gt_column_spanner {
-  border-bottom-style: solid;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-  vertical-align: bottom;
-  padding-top: 5px;
-  padding-bottom: 5px;
-  overflow-x: hidden;
-  display: inline-block;
-  width: 100%;
-}
-
-#akjkmiwvfq .gt_spanner_row {
-  border-bottom-style: hidden;
-}
-
-#akjkmiwvfq .gt_group_heading {
-  padding-top: 8px;
-  padding-bottom: 8px;
-  padding-left: 5px;
-  padding-right: 5px;
-  color: #333333;
-  background-color: #FFFFFF;
-  font-size: 100%;
-  font-weight: initial;
-  text-transform: inherit;
-  border-top-style: solid;
-  border-top-width: 2px;
-  border-top-color: #D3D3D3;
-  border-bottom-style: solid;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-  border-left-style: none;
-  border-left-width: 1px;
-  border-left-color: #D3D3D3;
-  border-right-style: none;
-  border-right-width: 1px;
-  border-right-color: #D3D3D3;
-  vertical-align: middle;
-  text-align: left;
-}
-
-#akjkmiwvfq .gt_empty_group_heading {
-  padding: 0.5px;
-  color: #333333;
-  background-color: #FFFFFF;
-  font-size: 100%;
-  font-weight: initial;
-  border-top-style: solid;
-  border-top-width: 2px;
-  border-top-color: #D3D3D3;
-  border-bottom-style: solid;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-  vertical-align: middle;
-}
-
-#akjkmiwvfq .gt_from_md > :first-child {
-  margin-top: 0;
-}
-
-#akjkmiwvfq .gt_from_md > :last-child {
-  margin-bottom: 0;
-}
-
-#akjkmiwvfq .gt_row {
-  padding-top: 8px;
-  padding-bottom: 8px;
-  padding-left: 5px;
-  padding-right: 5px;
-  margin: 10px;
-  border-top-style: solid;
-  border-top-width: 1px;
-  border-top-color: #D3D3D3;
-  border-left-style: none;
-  border-left-width: 1px;
-  border-left-color: #D3D3D3;
-  border-right-style: none;
-  border-right-width: 1px;
-  border-right-color: #D3D3D3;
-  vertical-align: middle;
-  overflow-x: hidden;
-}
-
-#akjkmiwvfq .gt_stub {
-  color: #333333;
-  background-color: #FFFFFF;
-  font-size: 100%;
-  font-weight: initial;
-  text-transform: inherit;
-  border-right-style: solid;
-  border-right-width: 2px;
-  border-right-color: #D3D3D3;
-  padding-left: 5px;
-  padding-right: 5px;
-}
-
-#akjkmiwvfq .gt_stub_row_group {
-  color: #333333;
-  background-color: #FFFFFF;
-  font-size: 100%;
-  font-weight: initial;
-  text-transform: inherit;
-  border-right-style: solid;
-  border-right-width: 2px;
-  border-right-color: #D3D3D3;
-  padding-left: 5px;
-  padding-right: 5px;
-  vertical-align: top;
-}
-
-#akjkmiwvfq .gt_row_group_first td {
-  border-top-width: 2px;
-}
-
-#akjkmiwvfq .gt_row_group_first th {
-  border-top-width: 2px;
-}
-
-#akjkmiwvfq .gt_summary_row {
-  color: #333333;
-  background-color: #FFFFFF;
-  text-transform: inherit;
-  padding-top: 8px;
-  padding-bottom: 8px;
-  padding-left: 5px;
-  padding-right: 5px;
-}
-
-#akjkmiwvfq .gt_first_summary_row {
-  border-top-style: solid;
-  border-top-color: #D3D3D3;
-}
-
-#akjkmiwvfq .gt_first_summary_row.thick {
-  border-top-width: 2px;
-}
-
-#akjkmiwvfq .gt_last_summary_row {
-  padding-top: 8px;
-  padding-bottom: 8px;
-  padding-left: 5px;
-  padding-right: 5px;
-  border-bottom-style: solid;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-}
-
-#akjkmiwvfq .gt_grand_summary_row {
-  color: #333333;
-  background-color: #FFFFFF;
-  text-transform: inherit;
-  padding-top: 8px;
-  padding-bottom: 8px;
-  padding-left: 5px;
-  padding-right: 5px;
-}
-
-#akjkmiwvfq .gt_first_grand_summary_row {
-  padding-top: 8px;
-  padding-bottom: 8px;
-  padding-left: 5px;
-  padding-right: 5px;
-  border-top-style: double;
-  border-top-width: 6px;
-  border-top-color: #D3D3D3;
-}
-
-#akjkmiwvfq .gt_last_grand_summary_row_top {
-  padding-top: 8px;
-  padding-bottom: 8px;
-  padding-left: 5px;
-  padding-right: 5px;
-  border-bottom-style: double;
-  border-bottom-width: 6px;
-  border-bottom-color: #D3D3D3;
-}
-
-#akjkmiwvfq .gt_striped {
-  background-color: rgba(128, 128, 128, 0.05);
-}
-
-#akjkmiwvfq .gt_table_body {
-  border-top-style: solid;
-  border-top-width: 2px;
-  border-top-color: #D3D3D3;
-  border-bottom-style: solid;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-}
-
-#akjkmiwvfq .gt_footnotes {
-  color: #333333;
-  background-color: #FFFFFF;
-  border-bottom-style: none;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-  border-left-style: none;
-  border-left-width: 2px;
-  border-left-color: #D3D3D3;
-  border-right-style: none;
-  border-right-width: 2px;
-  border-right-color: #D3D3D3;
-}
-
-#akjkmiwvfq .gt_footnote {
-  margin: 0px;
-  font-size: 90%;
-  padding-top: 4px;
-  padding-bottom: 4px;
-  padding-left: 5px;
-  padding-right: 5px;
-}
-
-#akjkmiwvfq .gt_sourcenotes {
-  color: #333333;
-  background-color: #FFFFFF;
-  border-bottom-style: none;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-  border-left-style: none;
-  border-left-width: 2px;
-  border-left-color: #D3D3D3;
-  border-right-style: none;
-  border-right-width: 2px;
-  border-right-color: #D3D3D3;
-}
-
-#akjkmiwvfq .gt_sourcenote {
-  font-size: 90%;
-  padding-top: 4px;
-  padding-bottom: 4px;
-  padding-left: 5px;
-  padding-right: 5px;
-}
-
-#akjkmiwvfq .gt_left {
-  text-align: left;
-}
-
-#akjkmiwvfq .gt_center {
-  text-align: center;
-}
-
-#akjkmiwvfq .gt_right {
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-}
-
-#akjkmiwvfq .gt_font_normal {
-  font-weight: normal;
-}
-
-#akjkmiwvfq .gt_font_bold {
-  font-weight: bold;
-}
-
-#akjkmiwvfq .gt_font_italic {
-  font-style: italic;
-}
-
-#akjkmiwvfq .gt_super {
-  font-size: 65%;
-}
-
-#akjkmiwvfq .gt_footnote_marks {
-  font-size: 75%;
-  vertical-align: 0.4em;
-  position: initial;
-}
-
-#akjkmiwvfq .gt_asterisk {
-  font-size: 100%;
-  vertical-align: 0;
-}
-
-#akjkmiwvfq .gt_indent_1 {
-  text-indent: 5px;
-}
-
-#akjkmiwvfq .gt_indent_2 {
-  text-indent: 10px;
-}
-
-#akjkmiwvfq .gt_indent_3 {
-  text-indent: 15px;
-}
-
-#akjkmiwvfq .gt_indent_4 {
-  text-indent: 20px;
-}
-
-#akjkmiwvfq .gt_indent_5 {
-  text-indent: 25px;
-}
-</style>
-<table class="gt_table" data-quarto-disable-processing="false" data-quarto-bootstrap="false">
-  <thead>
-    
-    <tr class="gt_col_headings">
-      <th class="gt_col_heading gt_columns_bottom_border gt_left" rowspan="1" colspan="1" scope="col" id="&lt;strong&gt;Characteristic&lt;/strong&gt;"><strong>Characteristic</strong></th>
-      <th class="gt_col_heading gt_columns_bottom_border gt_center" rowspan="1" colspan="1" scope="col" id="&lt;strong&gt;log(OR)&lt;/strong&gt;&lt;span class=&quot;gt_footnote_marks&quot; style=&quot;white-space:nowrap;font-style:italic;font-weight:normal;&quot;&gt;&lt;sup&gt;1&lt;/sup&gt;&lt;/span&gt;"><strong>log(OR)</strong><span class="gt_footnote_marks" style="white-space:nowrap;font-style:italic;font-weight:normal;"><sup>1</sup></span></th>
-      <th class="gt_col_heading gt_columns_bottom_border gt_center" rowspan="1" colspan="1" scope="col" id="&lt;strong&gt;95% CI&lt;/strong&gt;"><strong>95% CI</strong></th>
-      <th class="gt_col_heading gt_columns_bottom_border gt_center" rowspan="1" colspan="1" scope="col" id="&lt;strong&gt;p-value&lt;/strong&gt;"><strong>p-value</strong></th>
-    </tr>
-  </thead>
-  <tbody class="gt_table_body">
-    <tr><td headers="label" class="gt_row gt_left">rx</td>
-<td headers="estimate" class="gt_row gt_center">0.37</td>
-<td headers="ci" class="gt_row gt_center">0.12, 0.63</td>
-<td headers="p.value" class="gt_row gt_center">0.005</td></tr>
-  </tbody>
-  
-  <tfoot class="gt_footnotes">
-    <tr>
-      <td class="gt_footnote" colspan="4"><span class="gt_footnote_marks" style="white-space:nowrap;font-style:italic;font-weight:normal;"><sup>1</sup></span> OR = Odds Ratio</td>
-    </tr>
-  </tfoot>
-</table>
-</div>
-```
-
-```r
-# Get the exp coefficient (i.e. OR) and exp confidence intervals
-# coef_summary <- exp(summary(fit_logit)$coefficients)
-```
-
-#### Let's confirm the power
-
-```r
-replicate <- function() {
-  dd_binary <- simple_rct_binary_probs(710, p0 = 0.3, p1 = 0.4)
-  fit_logit <- glm(y ~ rx, data = dd_binary, family = binomial)
-  
-  coef(summary(fit_logit))["rx", "Pr(>|z|)"]
-}
-
-p_values <- mclapply(1:1000, function(x) replicate(), mc.cores = 4)
-
-# Estimated power based on 1000 replications.
-mean(unlist(p_values) < 0.05)
-```
-
-```
-## [1] 0.819
-```
-
-### Second, now move to a cluster randomized trial, but same context
-#### Sample size calculation
-ICC: 0.15 (this is rather conservative, according to guidance from CDC guidance re ICC for PrEP uptake as outcome [https://www.cdc.gov/hiv/pdf/research/interventionresearch/compendium/prep/PrEP_Chapter_EBI_Criteria.pdf] and see data from SEARCH [https://www.ncbi.nlm.nih.gov/pmc/articles/PMC9169331/], and realistic for a behavioral intervention)
-Cluster size: 50
-Since individuals in the same cluster are correlated, we need to adjust the sample size using the design effect.
-Design Effect = 1+(n−1)ρ; where, n=50 (number of individuals per site), ρ = 0.15
-=> Design effect = 8.35
-
-```r
-cluster_size <- 50  # Average cluster size, i.e. participants per cluster
-icc <- 0.15
-deff_c <- 1 + (cluster_size - 1) * icc # design effect due to cluster randomization
-
-ss_crt_standard <- ss_ind * deff_c
-cat("Total sample size CRT, standard:", ss_crt_standard) # total sample size for a standard CRT
-```
-
-```
-## Total sample size CRT, standard: 5935.502
-```
-
-```r
-n_clus_crt_standard <- ss_crt_standard / cluster_size
-cat("Total N clusters CRT, standard:", n_clus_crt_standard) # total number of clusters for a standard CRT (divide by arm or sequence/steps if SWCRT)
-```
-
-```
-## Total N clusters CRT, standard: 118.71
-```
-
-#### Let's generate the data
-Use a logistic model: Instead of y being normally distributed, we model the log-odds (logit) of success.
-Convert the linear predictor into a probability: Use the inverse logit (logistic function):
-P(Y ij = 1) = e ηij / 1 + e ηij
-ηij = cj + β⋅rxj
-Simulate binary outcomes: Draw y from a Bernoulli distribution based on the computed probabilities.
-
-Since you’ve estimated an intraclass correlation coefficient (ICC) of 0.10 for PrEP uptake, we can now determine reasonable variance parameters for your binary outcome model.
-In logistic models, the ICC is the proportion of total variance explained by between-site variation (i.e., clustering).
-
-ICC = Between-site variance / Total variance
-
-The total variance in a logistic model is fixed at π^2 / 3 = 3.29 for the residual level (individual variation).
-The between-site variance (σ^2c) is what we need to determine.
-
-The ICC formula for a logistic model is:
-
-ICC = σ^2c / σ^2c + (π^2 / 3)
-
-If there’s additional within-site variation over time, we include σ^2cp.
-
-Typically, this is a fraction of σ^2c, e.g., half the site-level variance.
-
-```r
-simple_crt_binary <- function(nsites, n, p_cont, p_int, ICC) {
-  # Convert the proportions to log-odds
-  logit_cont <- log(p_cont / (1 - p_cont))  # Log-odds for control group
-  logit_int <- log(p_int / (1 - p_int))    # Log-odds for intervention group
-  
-  # Calculate the treatment effect (log-odds difference)
-  log_OR <- logit_int - logit_cont  # Difference in log-odds
-  
-  # Calculate the between-cluster variance (σ^2c) from ICC
-  sigma2_c <- ICC * (pi^2 / 3) / (1 - ICC)  # Between-site variance
-  cat("Between-site variance (σ^2c):", sigma2_c, "\n")
-  
-  # Treatment assignment (1:1 randomization)
-  defC <- defData(varname = "rx", formula = "1;1", dist = "trtAssign")
-  
-  # Define Site-Level Random Effect (c) with variance σ^2c
-  defC <- defData(defC, varname = "c", formula = "0", variance = sigma2_c, dist = "normal")
-  
-  # Define Individual-Level Outcome (logit model)
-  defS <- defDataAdd(varname = "y", 
-                     formula = paste0("c + ", logit_cont, " + ", log_OR, " * rx"), 
-                     dist = "binary", link = "logit")
-  
-  # Generate site-level data
-  dc <- genData(nsites, defC, id = "site")
-  
-  # Generate individual-level data (n participants per site)
-  dd <- genCluster(dc, "site", n, "id")
-  dd <- addColumns(defS, dd)
-  
-  return(dd)
-}
-
-# Example: Simulating the data
-p_cont <- 0.30  # Proportion of outcome in the control group
-p_int <- 0.40   # Proportion of outcome in the intervention group
-ICC <- 0.15     # Intraclass correlation coefficient (low ICC)
-n <- 50          # Number of participants per site
-nsites <- 118    # Number of sites (clusters)
-
-# Simulate the data
-dd_binary <- simple_crt_binary(nsites = nsites, n = n, p_cont = p_cont, p_int = p_int, ICC = ICC)
-```
-
-```
-## Between-site variance (σ^2c): 0.580565
-```
-
-```r
-# Calculate the success rate for each treatment group
-dd_binary_summary <- dd_binary %>%
+# Visualize the clusters and their variability
+cluster_summary <- dd_sim %>%
+  group_by(site, rx) %>%
+  summarise(cluster_size = n(), .groups = "drop")
+mean_sizes <- cluster_summary %>%
   group_by(rx) %>%
-  summarise(success_rate = mean(y))
-
-# View the summary
-print(dd_binary_summary)
-```
-
-```
-## # A tibble: 2 × 2
-##      rx success_rate
-##   <int>        <dbl>
-## 1     0        0.302
-## 2     1        0.429
-```
-
-```r
-# Create violin plot with sites on x-axis and colors for treatment/control
-ggplot(dd_binary, aes(x = factor(site), y = y, fill = factor(rx))) +
-  geom_violin(trim = FALSE, alpha = 0.5) +  # Violin plot with transparency
-  geom_jitter(shape = 16, position = position_jitter(0.2), alpha = 0.4, size = 2) +  # Scatter individual points
-  scale_fill_manual(values = c("blue", "red"), labels = c("Control", "Treatment")) +
-  labs(x = "Site (Cluster)", y = "Outcome (y)", title = "Binary Outcome Distribution by Site") +
+  summarise(mean_size = mean(cluster_size))
+ggplot(cluster_summary, aes(x = factor(site), y = cluster_size, fill = factor(rx))) +
+  geom_bar(stat = "identity", color = "black") +
+  geom_hline(data = mean_sizes, aes(yintercept = mean_size, color = factor(rx)), 
+             linetype = "dashed", size = 1, show.legend = FALSE) +
+  geom_text(data = mean_sizes, aes(x = Inf, y = mean_size, label = paste0("Mean = ", round(mean_size, 1))),
+            hjust = 1.1, vjust = -0.5, color = c("skyblue4", "tomato3"), size = 4) +
+  scale_fill_manual(values = c("skyblue", "tomato"), labels = c("Control (rx=0)", "Intervention (rx=1)")) +
+  scale_color_manual(values = c("skyblue4", "tomato3")) +
+  labs(x = "Cluster (Site)", y = "Cluster Size", fill = "Treatment Group") +
   theme_minimal() +
-  theme(legend.title = element_blank(), axis.text.x = element_text(angle = 90, hjust = 1))
+  ggtitle("Cluster size per site") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
 ```
 
-![](CRT_baseline_period_files/figure-html/unnamed-chunk-26-1.png)<!-- -->
+```
+## Warning: Using `size` aesthetic for lines was deprecated in ggplot2 3.4.0.
+## ℹ Please use `linewidth` instead.
+## This warning is displayed once every 8 hours.
+## Call `lifecycle::last_lifecycle_warnings()` to see where this warning was
+## generated.
+```
+
+![](CRT_baseline_period_files/figure-html/unnamed-chunk-22-2.png)<!-- -->
 
 ```r
-# Check the distribution of treatment and control groups within each site
-addmargins(table(dd_binary$rx, dd_binary$site))
+# Compute proportion of outcome = 1 by cluster and treatment group
+cluster_outcomes <- dd_sim %>%
+  group_by(site, rx) %>%
+  summarise(prop_y = mean(y), .groups = "drop")
+
+# Create plot
+ggplot(cluster_outcomes, aes(x = factor(site), y = prop_y, fill = factor(rx))) +
+  geom_bar(stat = "identity", position = "dodge", color = "black") +
+  scale_fill_manual(values = c("skyblue", "tomato"), labels = c("Control (rx=0)", "Intervention (rx=1)")) +
+  labs(
+    x = "Cluster",
+    y = "Proportion being prescribed AB (y = 1)",
+    fill = "Treatment Group"
+  ) +
+  theme_minimal() +
+  ggtitle("Proportion being prescribed AB, by cluster and treatment group") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
 ```
 
-```
-##      
-##          1    2    3    4    5    6    7    8    9   10   11   12   13   14
-##   0     50   50    0    0   50   50   50    0   50    0   50    0    0   50
-##   1      0    0   50   50    0    0    0   50    0   50    0   50   50    0
-##   Sum   50   50   50   50   50   50   50   50   50   50   50   50   50   50
-##      
-##         15   16   17   18   19   20   21   22   23   24   25   26   27   28
-##   0     50   50    0   50    0   50   50    0    0    0    0    0   50   50
-##   1      0    0   50    0   50    0    0   50   50   50   50   50    0    0
-##   Sum   50   50   50   50   50   50   50   50   50   50   50   50   50   50
-##      
-##         29   30   31   32   33   34   35   36   37   38   39   40   41   42
-##   0      0    0    0    0   50   50    0   50    0   50   50    0   50    0
-##   1     50   50   50   50    0    0   50    0   50    0    0   50    0   50
-##   Sum   50   50   50   50   50   50   50   50   50   50   50   50   50   50
-##      
-##         43   44   45   46   47   48   49   50   51   52   53   54   55   56
-##   0      0    0    0    0   50   50   50   50   50   50   50   50   50   50
-##   1     50   50   50   50    0    0    0    0    0    0    0    0    0    0
-##   Sum   50   50   50   50   50   50   50   50   50   50   50   50   50   50
-##      
-##         57   58   59   60   61   62   63   64   65   66   67   68   69   70
-##   0     50   50    0    0    0   50    0    0   50    0   50    0    0    0
-##   1      0    0   50   50   50    0   50   50    0   50    0   50   50   50
-##   Sum   50   50   50   50   50   50   50   50   50   50   50   50   50   50
-##      
-##         71   72   73   74   75   76   77   78   79   80   81   82   83   84
-##   0      0    0   50   50   50   50    0    0    0   50    0   50    0    0
-##   1     50   50    0    0    0    0   50   50   50    0   50    0   50   50
-##   Sum   50   50   50   50   50   50   50   50   50   50   50   50   50   50
-##      
-##         85   86   87   88   89   90   91   92   93   94   95   96   97   98
-##   0     50    0    0    0   50   50   50   50   50    0   50   50    0   50
-##   1      0   50   50   50    0    0    0    0    0   50    0    0   50    0
-##   Sum   50   50   50   50   50   50   50   50   50   50   50   50   50   50
-##      
-##         99  100  101  102  103  104  105  106  107  108  109  110  111  112
-##   0     50    0    0    0    0    0   50   50   50   50    0   50    0    0
-##   1      0   50   50   50   50   50    0    0    0    0   50    0   50   50
-##   Sum   50   50   50   50   50   50   50   50   50   50   50   50   50   50
-##      
-##        113  114  115  116  117  118  Sum
-##   0     50    0    0   50    0    0 2950
-##   1      0   50   50    0   50   50 2950
-##   Sum   50   50   50   50   50   50 5900
-```
+![](CRT_baseline_period_files/figure-html/unnamed-chunk-22-3.png)<!-- -->
+
+#### Let's generate more data, a two-arm CRT with fixed cluster size, according to the parameters above, but with correlated baseline measure
 
 ```r
-# Define probabilities
-p_cont <- 0.30  # Proportion of outcome in the control group
-p_int <- 0.40   # Proportion of outcome in the intervention group
+crt_binary_twoarm_withbaseline <- function(n_clusters, cluster_size, p0, p1, ICC, corr_y0_y1) {
+  # helper functions to switch between prop and log odds
+  logit <- function(p) log(p / (1 - p))
+  inv_logit <- function(x) exp(x) / (1 + exp(x))
+  
+  # Cluster-level random effect variance
+  sigma2_c <- ICC * (pi^2 / 3) / (1 - ICC)
+  
+  # Individual-level shared effect (v_i): to induce correlation between y0 and y1 within same individual.
+  # Binary variables don’t directly support correlation like continuous ones. So, I introduce shared latent random effects in the logit (log-odds) space.
+  sigma2_i <- (pi^2 / 3) * corr_y0_y1 / (1 - ICC)
+  
+  # Treatment effect (log-odds scale)
+  beta1 <- logit(p1) - logit(p0)
+  
+  # Define clusters
+  defC <- defData(varname = "rx", formula = "1;1", dist = "trtAssign")
+  defC <- defData(defC, varname = "u", formula = 0, variance = sigma2_c) # cluster-level random intercept (mean 0, variance = sigma2_c)
+  clusters <- genData(n_clusters, defC, id = "site") # one row per cluster
+  
+  # Individuals within clusters
+  individuals <- genCluster(clusters, "site", cluster_size, "id")
+  individuals <- addColumns(defDataAdd(varname = "v", formula = 0, variance = sigma2_i), individuals) # an individual-level shared random effect, used in both y0 and y1 to correlate them
 
-# Calculate log-odds for control and intervention groups
-logit_cont <- log(p_cont / (1 - p_cont))  # Log-odds for control group
-logit_int <- log(p_int / (1 - p_int))    # Log-odds for intervention group
+  # Generate latent scores (linear predictors)
+  individuals[, eta_y0 := logit(p0) + u + v] # baseline log-odds, same across both trial arms
+  individuals[, eta_y1 := logit(p0) + u + v + beta1 * (rx == 1)] # follow-up log-odds, increased (or decreased) by beta1 in the intervention group
+  
+  # Simulate binary outcomes, drawn from Bernoulli distribution (success probability is the inverse-logit of the linear predictor)
+  individuals[, y0 := rbinom(.N, 1, inv_logit(eta_y0))]
+  individuals[, y1 := rbinom(.N, 1, inv_logit(eta_y1))]
+  
+  return(individuals[, .(site, id, rx, y0, y1)])
+}
 
-# Calculate the treatment effect as the difference in log-odds
-log_OR <- logit_int - logit_cont  # Difference in log-odds (treatment effect)
+set.seed(1234)
+df_crt_b <- crt_binary_twoarm_withbaseline(
+  n_clusters = 26,
+  cluster_size = 150,
+  p0 = 0.75, 
+  p1 = 0.50,
+  ICC = 0.20, 
+  corr_y0_y1 = 0.5
+)
 
-# Calculate the odds ratio (OR)
-OR <- (p_int / (1 - p_int)) / (p_cont / (1 - p_cont))  # Odds ratio
-
-# Calculate the log of the odds ratio (log-OR)
-log_OR_from_OR <- log(OR)  # Log of odds ratio
-
-# Print the results
-cat("Log-odds for Control Group:", logit_cont, "\n")
+## Check the simulated dataset
+table(df_crt_b$rx, df_crt_b$site)
 ```
 
 ```
-## Log-odds for Control Group: -0.8472979
-```
-
-```r
-cat("Log-odds for Intervention Group:", logit_int, "\n")
-```
-
-```
-## Log-odds for Intervention Group: -0.4054651
-```
-
-```r
-cat("Treatment Effect (Log-Odds Difference):", log_OR, "\n")
-```
-
-```
-## Treatment Effect (Log-Odds Difference): 0.4418328
-```
-
-```r
-cat("Odds Ratio (OR):", OR, "\n")
-```
-
-```
-## Odds Ratio (OR): 1.555556
+##    
+##       1   2   3   4   5   6   7   8   9  10  11  12  13  14  15  16  17  18  19
+##   0   0   0 150   0 150 150 150 150   0   0 150   0   0 150 150   0 150   0   0
+##   1 150 150   0 150   0   0   0   0 150 150   0 150 150   0   0 150   0 150 150
+##    
+##      20  21  22  23  24  25  26
+##   0 150   0   0   0 150 150 150
+##   1   0 150 150 150   0   0   0
 ```
 
 ```r
-cat("Log-Odds Ratio (log(OR)):", log_OR_from_OR, "\n") # same as treatment effect, but both on log
+table(df_crt_b$rx)
 ```
 
 ```
-## Log-Odds Ratio (log(OR)): 0.4418328
-```
-
-#### Let's estimate the effect size
-A logistic mixed effects model with random intercept is used to estimate the effect size.
-
-```r
-dd_binary <- simple_crt_binary(nsites = nsites, n = n, p_cont = p_cont, p_int = p_int, ICC = ICC)
-```
-
-```
-## Between-site variance (σ^2c): 0.580565
+## 
+##    0    1 
+## 1950 1950
 ```
 
 ```r
-# Fit a logistic mixed-effects model with random intercepts for site
-fit_logistic <- glmer(y ~ rx + (1 | site), data = dd_binary, family = binomial)
+# Check the proportions
+prop_1 <- mean(df_crt_b$y1[df_crt_b$rx == 0])  
+prop_2 <- mean(df_crt_b$y1[df_crt_b$rx == 1])
 
-tbl_regression(fit_logistic, tidy_fun = broom.mixed::tidy)  %>% 
+# Visualize the outcome distribution for each treatment group
+ggplot(df_crt_b, aes(x = factor(rx), fill = factor(y1))) + 
+  geom_bar(position = "fill", color = "black") + 
+  scale_fill_manual(values = c("gray", "blue"), labels = c("No AB prescribed", "AB prescribed")) +
+  labs(x = "Treatment Group", y = "Proportion", fill = "Outcome") +
+  theme_minimal() +
+  ggtitle("Proportion of reaching outcome by treatment group")
+```
+
+![](CRT_baseline_period_files/figure-html/unnamed-chunk-23-1.png)<!-- -->
+
+```r
+# Visualize the clusters and their variability
+cluster_summary <- df_crt_b %>%
+  group_by(site, rx) %>%
+  summarise(cluster_size = n(), .groups = "drop")
+mean_sizes <- cluster_summary %>%
+  group_by(rx) %>%
+  summarise(mean_size = mean(cluster_size))
+ggplot(cluster_summary, aes(x = factor(site), y = cluster_size, fill = factor(rx))) +
+  geom_bar(stat = "identity", color = "black") +
+  geom_hline(data = mean_sizes, aes(yintercept = mean_size, color = factor(rx)), 
+             linetype = "dashed", size = 1, show.legend = FALSE) +
+  geom_text(data = mean_sizes, aes(x = Inf, y = mean_size, label = paste0("Mean = ", round(mean_size, 1))),
+            hjust = 1.1, vjust = -0.5, color = c("skyblue4", "tomato3"), size = 4) +
+  scale_fill_manual(values = c("skyblue", "tomato"), labels = c("Control (rx=0)", "Intervention (rx=1)")) +
+  scale_color_manual(values = c("skyblue4", "tomato3")) +
+  labs(x = "Cluster (Site)", y = "Cluster Size", fill = "Treatment Group") +
+  theme_minimal() +
+  ggtitle("Cluster size per site") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+![](CRT_baseline_period_files/figure-html/unnamed-chunk-23-2.png)<!-- -->
+
+```r
+# Compute proportion of outcome = 1 by cluster and treatment group
+cluster_outcomes <- df_crt_b %>%
+  group_by(site, rx) %>%
+  summarise(prop_y = mean(y1), .groups = "drop")
+
+# Create plot
+ggplot(cluster_outcomes, aes(x = factor(site), y = prop_y, fill = factor(rx))) +
+  geom_bar(stat = "identity", position = "dodge", color = "black") +
+  scale_fill_manual(values = c("skyblue", "tomato"), labels = c("Control (rx=0)", "Intervention (rx=1)")) +
+  labs(
+    x = "Cluster",
+    y = "Proportion being prescribed AB (y = 1)",
+    fill = "Treatment Group"
+  ) +
+  theme_minimal() +
+  ggtitle("Proportion being prescribed AB, by cluster and treatment group") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+![](CRT_baseline_period_files/figure-html/unnamed-chunk-23-3.png)<!-- -->
+
+#### Let's estimate the effect size, using a usual GLMM ANCOVA, once unadjusted, once adjusted
+
+```r
+# Ensure treatment variable is a factor with "control" as reference
+df_crt_b <- df_crt_b %>%
+  mutate(rx = factor(rx)) %>%
+  mutate(rx = relevel(rx, ref = "0"))
+
+# usual GLMM ANCOVA model, without baseline adjustment
+fit_bin_unadj <- glmer(y1 ~ rx + (1 | site), data = df_crt_b, family = binomial)
+fit_bin_adj <- glmer(y1 ~ rx + y0 + (1 | site), data = df_crt_b, family = binomial)
+
+tbl_bin_unadj <- tbl_regression(fit_bin_unadj, exponentiate = TRUE, tidy_fun = broom.mixed::tidy)  %>% 
   modify_footnote(ci ~ NA, abbreviation = TRUE)
+as_kable(tbl_bin_unadj)
 ```
 
-```{=html}
-<div id="wattamuvsw" style="padding-left:0px;padding-right:0px;padding-top:10px;padding-bottom:10px;overflow-x:auto;overflow-y:auto;width:auto;height:auto;">
-<style>#wattamuvsw table {
-  font-family: system-ui, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
-
-#wattamuvsw thead, #wattamuvsw tbody, #wattamuvsw tfoot, #wattamuvsw tr, #wattamuvsw td, #wattamuvsw th {
-  border-style: none;
-}
-
-#wattamuvsw p {
-  margin: 0;
-  padding: 0;
-}
-
-#wattamuvsw .gt_table {
-  display: table;
-  border-collapse: collapse;
-  line-height: normal;
-  margin-left: auto;
-  margin-right: auto;
-  color: #333333;
-  font-size: 16px;
-  font-weight: normal;
-  font-style: normal;
-  background-color: #FFFFFF;
-  width: auto;
-  border-top-style: solid;
-  border-top-width: 2px;
-  border-top-color: #A8A8A8;
-  border-right-style: none;
-  border-right-width: 2px;
-  border-right-color: #D3D3D3;
-  border-bottom-style: solid;
-  border-bottom-width: 2px;
-  border-bottom-color: #A8A8A8;
-  border-left-style: none;
-  border-left-width: 2px;
-  border-left-color: #D3D3D3;
-}
-
-#wattamuvsw .gt_caption {
-  padding-top: 4px;
-  padding-bottom: 4px;
-}
-
-#wattamuvsw .gt_title {
-  color: #333333;
-  font-size: 125%;
-  font-weight: initial;
-  padding-top: 4px;
-  padding-bottom: 4px;
-  padding-left: 5px;
-  padding-right: 5px;
-  border-bottom-color: #FFFFFF;
-  border-bottom-width: 0;
-}
-
-#wattamuvsw .gt_subtitle {
-  color: #333333;
-  font-size: 85%;
-  font-weight: initial;
-  padding-top: 3px;
-  padding-bottom: 5px;
-  padding-left: 5px;
-  padding-right: 5px;
-  border-top-color: #FFFFFF;
-  border-top-width: 0;
-}
-
-#wattamuvsw .gt_heading {
-  background-color: #FFFFFF;
-  text-align: center;
-  border-bottom-color: #FFFFFF;
-  border-left-style: none;
-  border-left-width: 1px;
-  border-left-color: #D3D3D3;
-  border-right-style: none;
-  border-right-width: 1px;
-  border-right-color: #D3D3D3;
-}
-
-#wattamuvsw .gt_bottom_border {
-  border-bottom-style: solid;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-}
-
-#wattamuvsw .gt_col_headings {
-  border-top-style: solid;
-  border-top-width: 2px;
-  border-top-color: #D3D3D3;
-  border-bottom-style: solid;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-  border-left-style: none;
-  border-left-width: 1px;
-  border-left-color: #D3D3D3;
-  border-right-style: none;
-  border-right-width: 1px;
-  border-right-color: #D3D3D3;
-}
-
-#wattamuvsw .gt_col_heading {
-  color: #333333;
-  background-color: #FFFFFF;
-  font-size: 100%;
-  font-weight: normal;
-  text-transform: inherit;
-  border-left-style: none;
-  border-left-width: 1px;
-  border-left-color: #D3D3D3;
-  border-right-style: none;
-  border-right-width: 1px;
-  border-right-color: #D3D3D3;
-  vertical-align: bottom;
-  padding-top: 5px;
-  padding-bottom: 6px;
-  padding-left: 5px;
-  padding-right: 5px;
-  overflow-x: hidden;
-}
-
-#wattamuvsw .gt_column_spanner_outer {
-  color: #333333;
-  background-color: #FFFFFF;
-  font-size: 100%;
-  font-weight: normal;
-  text-transform: inherit;
-  padding-top: 0;
-  padding-bottom: 0;
-  padding-left: 4px;
-  padding-right: 4px;
-}
-
-#wattamuvsw .gt_column_spanner_outer:first-child {
-  padding-left: 0;
-}
-
-#wattamuvsw .gt_column_spanner_outer:last-child {
-  padding-right: 0;
-}
-
-#wattamuvsw .gt_column_spanner {
-  border-bottom-style: solid;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-  vertical-align: bottom;
-  padding-top: 5px;
-  padding-bottom: 5px;
-  overflow-x: hidden;
-  display: inline-block;
-  width: 100%;
-}
-
-#wattamuvsw .gt_spanner_row {
-  border-bottom-style: hidden;
-}
-
-#wattamuvsw .gt_group_heading {
-  padding-top: 8px;
-  padding-bottom: 8px;
-  padding-left: 5px;
-  padding-right: 5px;
-  color: #333333;
-  background-color: #FFFFFF;
-  font-size: 100%;
-  font-weight: initial;
-  text-transform: inherit;
-  border-top-style: solid;
-  border-top-width: 2px;
-  border-top-color: #D3D3D3;
-  border-bottom-style: solid;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-  border-left-style: none;
-  border-left-width: 1px;
-  border-left-color: #D3D3D3;
-  border-right-style: none;
-  border-right-width: 1px;
-  border-right-color: #D3D3D3;
-  vertical-align: middle;
-  text-align: left;
-}
-
-#wattamuvsw .gt_empty_group_heading {
-  padding: 0.5px;
-  color: #333333;
-  background-color: #FFFFFF;
-  font-size: 100%;
-  font-weight: initial;
-  border-top-style: solid;
-  border-top-width: 2px;
-  border-top-color: #D3D3D3;
-  border-bottom-style: solid;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-  vertical-align: middle;
-}
-
-#wattamuvsw .gt_from_md > :first-child {
-  margin-top: 0;
-}
-
-#wattamuvsw .gt_from_md > :last-child {
-  margin-bottom: 0;
-}
-
-#wattamuvsw .gt_row {
-  padding-top: 8px;
-  padding-bottom: 8px;
-  padding-left: 5px;
-  padding-right: 5px;
-  margin: 10px;
-  border-top-style: solid;
-  border-top-width: 1px;
-  border-top-color: #D3D3D3;
-  border-left-style: none;
-  border-left-width: 1px;
-  border-left-color: #D3D3D3;
-  border-right-style: none;
-  border-right-width: 1px;
-  border-right-color: #D3D3D3;
-  vertical-align: middle;
-  overflow-x: hidden;
-}
-
-#wattamuvsw .gt_stub {
-  color: #333333;
-  background-color: #FFFFFF;
-  font-size: 100%;
-  font-weight: initial;
-  text-transform: inherit;
-  border-right-style: solid;
-  border-right-width: 2px;
-  border-right-color: #D3D3D3;
-  padding-left: 5px;
-  padding-right: 5px;
-}
-
-#wattamuvsw .gt_stub_row_group {
-  color: #333333;
-  background-color: #FFFFFF;
-  font-size: 100%;
-  font-weight: initial;
-  text-transform: inherit;
-  border-right-style: solid;
-  border-right-width: 2px;
-  border-right-color: #D3D3D3;
-  padding-left: 5px;
-  padding-right: 5px;
-  vertical-align: top;
-}
-
-#wattamuvsw .gt_row_group_first td {
-  border-top-width: 2px;
-}
-
-#wattamuvsw .gt_row_group_first th {
-  border-top-width: 2px;
-}
-
-#wattamuvsw .gt_summary_row {
-  color: #333333;
-  background-color: #FFFFFF;
-  text-transform: inherit;
-  padding-top: 8px;
-  padding-bottom: 8px;
-  padding-left: 5px;
-  padding-right: 5px;
-}
-
-#wattamuvsw .gt_first_summary_row {
-  border-top-style: solid;
-  border-top-color: #D3D3D3;
-}
-
-#wattamuvsw .gt_first_summary_row.thick {
-  border-top-width: 2px;
-}
-
-#wattamuvsw .gt_last_summary_row {
-  padding-top: 8px;
-  padding-bottom: 8px;
-  padding-left: 5px;
-  padding-right: 5px;
-  border-bottom-style: solid;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-}
-
-#wattamuvsw .gt_grand_summary_row {
-  color: #333333;
-  background-color: #FFFFFF;
-  text-transform: inherit;
-  padding-top: 8px;
-  padding-bottom: 8px;
-  padding-left: 5px;
-  padding-right: 5px;
-}
-
-#wattamuvsw .gt_first_grand_summary_row {
-  padding-top: 8px;
-  padding-bottom: 8px;
-  padding-left: 5px;
-  padding-right: 5px;
-  border-top-style: double;
-  border-top-width: 6px;
-  border-top-color: #D3D3D3;
-}
-
-#wattamuvsw .gt_last_grand_summary_row_top {
-  padding-top: 8px;
-  padding-bottom: 8px;
-  padding-left: 5px;
-  padding-right: 5px;
-  border-bottom-style: double;
-  border-bottom-width: 6px;
-  border-bottom-color: #D3D3D3;
-}
-
-#wattamuvsw .gt_striped {
-  background-color: rgba(128, 128, 128, 0.05);
-}
-
-#wattamuvsw .gt_table_body {
-  border-top-style: solid;
-  border-top-width: 2px;
-  border-top-color: #D3D3D3;
-  border-bottom-style: solid;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-}
-
-#wattamuvsw .gt_footnotes {
-  color: #333333;
-  background-color: #FFFFFF;
-  border-bottom-style: none;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-  border-left-style: none;
-  border-left-width: 2px;
-  border-left-color: #D3D3D3;
-  border-right-style: none;
-  border-right-width: 2px;
-  border-right-color: #D3D3D3;
-}
-
-#wattamuvsw .gt_footnote {
-  margin: 0px;
-  font-size: 90%;
-  padding-top: 4px;
-  padding-bottom: 4px;
-  padding-left: 5px;
-  padding-right: 5px;
-}
-
-#wattamuvsw .gt_sourcenotes {
-  color: #333333;
-  background-color: #FFFFFF;
-  border-bottom-style: none;
-  border-bottom-width: 2px;
-  border-bottom-color: #D3D3D3;
-  border-left-style: none;
-  border-left-width: 2px;
-  border-left-color: #D3D3D3;
-  border-right-style: none;
-  border-right-width: 2px;
-  border-right-color: #D3D3D3;
-}
-
-#wattamuvsw .gt_sourcenote {
-  font-size: 90%;
-  padding-top: 4px;
-  padding-bottom: 4px;
-  padding-left: 5px;
-  padding-right: 5px;
-}
-
-#wattamuvsw .gt_left {
-  text-align: left;
-}
-
-#wattamuvsw .gt_center {
-  text-align: center;
-}
-
-#wattamuvsw .gt_right {
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-}
-
-#wattamuvsw .gt_font_normal {
-  font-weight: normal;
-}
-
-#wattamuvsw .gt_font_bold {
-  font-weight: bold;
-}
-
-#wattamuvsw .gt_font_italic {
-  font-style: italic;
-}
-
-#wattamuvsw .gt_super {
-  font-size: 65%;
-}
-
-#wattamuvsw .gt_footnote_marks {
-  font-size: 75%;
-  vertical-align: 0.4em;
-  position: initial;
-}
-
-#wattamuvsw .gt_asterisk {
-  font-size: 100%;
-  vertical-align: 0;
-}
-
-#wattamuvsw .gt_indent_1 {
-  text-indent: 5px;
-}
-
-#wattamuvsw .gt_indent_2 {
-  text-indent: 10px;
-}
-
-#wattamuvsw .gt_indent_3 {
-  text-indent: 15px;
-}
-
-#wattamuvsw .gt_indent_4 {
-  text-indent: 20px;
-}
-
-#wattamuvsw .gt_indent_5 {
-  text-indent: 25px;
-}
-</style>
-<table class="gt_table" data-quarto-disable-processing="false" data-quarto-bootstrap="false">
-  <thead>
-    
-    <tr class="gt_col_headings">
-      <th class="gt_col_heading gt_columns_bottom_border gt_left" rowspan="1" colspan="1" scope="col" id="&lt;strong&gt;Characteristic&lt;/strong&gt;"><strong>Characteristic</strong></th>
-      <th class="gt_col_heading gt_columns_bottom_border gt_center" rowspan="1" colspan="1" scope="col" id="&lt;strong&gt;log(OR)&lt;/strong&gt;&lt;span class=&quot;gt_footnote_marks&quot; style=&quot;white-space:nowrap;font-style:italic;font-weight:normal;&quot;&gt;&lt;sup&gt;1&lt;/sup&gt;&lt;/span&gt;"><strong>log(OR)</strong><span class="gt_footnote_marks" style="white-space:nowrap;font-style:italic;font-weight:normal;"><sup>1</sup></span></th>
-      <th class="gt_col_heading gt_columns_bottom_border gt_center" rowspan="1" colspan="1" scope="col" id="&lt;strong&gt;95% CI&lt;/strong&gt;"><strong>95% CI</strong></th>
-      <th class="gt_col_heading gt_columns_bottom_border gt_center" rowspan="1" colspan="1" scope="col" id="&lt;strong&gt;p-value&lt;/strong&gt;"><strong>p-value</strong></th>
-    </tr>
-  </thead>
-  <tbody class="gt_table_body">
-    <tr><td headers="label" class="gt_row gt_left">rx</td>
-<td headers="estimate" class="gt_row gt_center">0.23</td>
-<td headers="ci" class="gt_row gt_center">-0.06, 0.53</td>
-<td headers="p.value" class="gt_row gt_center">0.12</td></tr>
-    <tr><td headers="label" class="gt_row gt_left">site.sd__(Intercept)</td>
-<td headers="estimate" class="gt_row gt_center">0.76</td>
-<td headers="ci" class="gt_row gt_center"></td>
-<td headers="p.value" class="gt_row gt_center"></td></tr>
-  </tbody>
-  
-  <tfoot class="gt_footnotes">
-    <tr>
-      <td class="gt_footnote" colspan="4"><span class="gt_footnote_marks" style="white-space:nowrap;font-style:italic;font-weight:normal;"><sup>1</sup></span> OR = Odds Ratio</td>
-    </tr>
-  </tfoot>
+<table>
+ <thead>
+  <tr>
+   <th style="text-align:left;"> **Characteristic** </th>
+   <th style="text-align:center;"> **OR** </th>
+   <th style="text-align:center;"> **95% CI** </th>
+   <th style="text-align:center;"> **p-value** </th>
+  </tr>
+ </thead>
+<tbody>
+  <tr>
+   <td style="text-align:left;"> rx </td>
+   <td style="text-align:center;">  </td>
+   <td style="text-align:center;">  </td>
+   <td style="text-align:center;">  </td>
+  </tr>
+  <tr>
+   <td style="text-align:left;"> 0 </td>
+   <td style="text-align:center;"> — </td>
+   <td style="text-align:center;"> — </td>
+   <td style="text-align:center;">  </td>
+  </tr>
+  <tr>
+   <td style="text-align:left;"> 1 </td>
+   <td style="text-align:center;"> 0.35 </td>
+   <td style="text-align:center;"> 0.20, 0.64 </td>
+   <td style="text-align:center;"> &lt;0.001 </td>
+  </tr>
+  <tr>
+   <td style="text-align:left;"> site.sd__(Intercept) </td>
+   <td style="text-align:center;"> 0.75 </td>
+   <td style="text-align:center;">  </td>
+   <td style="text-align:center;">  </td>
+  </tr>
+</tbody>
 </table>
-</div>
-```
 
 ```r
-# Get the exp coefficient (i.e. OR) and exp confidence intervals
-coef_summary <- exp(summary(fit_logistic)$coefficients)
+tbl_bin_adj <- tbl_regression(fit_bin_adj, exponentiate = TRUE, tidy_fun = broom.mixed::tidy)  %>% 
+  modify_footnote(ci ~ NA, abbreviation = TRUE)
+as_kable(tbl_bin_adj)
 ```
 
-#### Let's confirm the power
+<table>
+ <thead>
+  <tr>
+   <th style="text-align:left;"> **Characteristic** </th>
+   <th style="text-align:center;"> **OR** </th>
+   <th style="text-align:center;"> **95% CI** </th>
+   <th style="text-align:center;"> **p-value** </th>
+  </tr>
+ </thead>
+<tbody>
+  <tr>
+   <td style="text-align:left;"> rx </td>
+   <td style="text-align:center;">  </td>
+   <td style="text-align:center;">  </td>
+   <td style="text-align:center;">  </td>
+  </tr>
+  <tr>
+   <td style="text-align:left;"> 0 </td>
+   <td style="text-align:center;"> — </td>
+   <td style="text-align:center;"> — </td>
+   <td style="text-align:center;">  </td>
+  </tr>
+  <tr>
+   <td style="text-align:left;"> 1 </td>
+   <td style="text-align:center;"> 0.37 </td>
+   <td style="text-align:center;"> 0.23, 0.59 </td>
+   <td style="text-align:center;"> &lt;0.001 </td>
+  </tr>
+  <tr>
+   <td style="text-align:left;"> y0 </td>
+   <td style="text-align:center;"> 3.45 </td>
+   <td style="text-align:center;"> 2.96, 4.01 </td>
+   <td style="text-align:center;"> &lt;0.001 </td>
+  </tr>
+  <tr>
+   <td style="text-align:left;"> site.sd__(Intercept) </td>
+   <td style="text-align:center;"> 0.60 </td>
+   <td style="text-align:center;">  </td>
+   <td style="text-align:center;">  </td>
+  </tr>
+</tbody>
+</table>
+
+#### Let's estimate the power, using a usual GLMM ANCOVA, once unadjusted, once adjusted
 
 ```r
+# UNADJUSTED
+set.seed(1234)
 replicate <- function() {
-  dd_binary <- simple_crt_binary(nsites = nsites, n = n, p_cont = p_cont, p_int = p_int, ICC = ICC)
-  fit_logistic <- glmer(y ~ rx + (1 | site), data = dd_binary, family = binomial)
-  
-  coef(summary(fit_logistic))["rx", "Pr(>|z|)"]
+  df_crt_b <- crt_binary_twoarm_withbaseline(n_clusters = 26, cluster_size = 150,
+                                             p0 = 0.75, p1 = 0.50, ICC = 0.20, corr_y0_y1 = 0.5)
+  fit_bin_unadj <- glmer(y1 ~ rx + (1 | site), data = df_crt_b, family = binomial)
+  coef(summary(fit_bin_unadj))["rx", "Pr(>|z|)"]
 }
 
-p_values <- mclapply(1:100, function(x) replicate(), mc.cores = 4)
-
+p_values <- mclapply(1:1000, function(x) replicate(), mc.cores = 8)
 mean(unlist(p_values) < 0.05)
 ```
 
 ```
-## [1] 0.88
+## [1] 0.85
 ```
 
 ```r
-p_values <- unlist(p_values)  # Convert list to vector
-
 # Create histogram
+p_values <- unlist(p_values)  # Convert list to vector
 ggplot(data.frame(p_values), aes(x = p_values)) +
   geom_histogram(binwidth = 0.05, fill = "blue", color = "black", alpha = 0.7) +
-  geom_vline(xintercept = 0.05, linetype = "dashed", color = "red", linewidth = 1) +
-  labs(title = "Distribution of p-values from xxx Simulations",
+  geom_vline(xintercept = 0.05, linetype = "dashed", color = "red", linewidth = 1) + # apply bonferroni correction instead?!
+  labs(title = "Distribution of p-values from 1000 simulations, unadjusted",
        x = "p-value",
        y = "Frequency") +
   theme_minimal()
 ```
 
-![](CRT_baseline_period_files/figure-html/unnamed-chunk-28-1.png)<!-- -->
+![](CRT_baseline_period_files/figure-html/unnamed-chunk-25-1.png)<!-- -->
+
+```r
+# ADJUSTED
+set.seed(1234)
+replicate <- function() {
+  df_crt_b <- crt_binary_twoarm_withbaseline(n_clusters = 26, cluster_size = 150,
+                                             p0 = 0.75, p1 = 0.50, ICC = 0.20, corr_y0_y1 = 0.5)
+  fit_bin_adj <- glmer(y1 ~ rx + y0 + (1 | site), data = df_crt_b, family = binomial)
+  coef(summary(fit_bin_adj))["rx", "Pr(>|z|)"]
+}
+
+p_values <- mclapply(1:1000, function(x) replicate(), mc.cores = 8)
+mean(unlist(p_values) < 0.05)
+```
+
+```
+## [1] 0.978
+```
+
+```r
+# Create histogram
+p_values <- unlist(p_values)  # Convert list to vector
+ggplot(data.frame(p_values), aes(x = p_values)) +
+  geom_histogram(binwidth = 0.05, fill = "blue", color = "black", alpha = 0.7) +
+  geom_vline(xintercept = 0.05, linetype = "dashed", color = "red", linewidth = 1) + # apply bonferroni correction instead?!
+  labs(title = "Distribution of p-values from 1000 simulations, adjusted",
+       x = "p-value",
+       y = "Frequency") +
+  theme_minimal()
+```
+
+![](CRT_baseline_period_files/figure-html/unnamed-chunk-25-2.png)<!-- -->
+
+### Let's discuss the different CRT estimands
+See https://doi.org/10.1093/ije/dyac131
+And https://journals.sagepub.com/doi/10.1177/09622802241254197
+And https://journals.sagepub.com/doi/10.1177/17407745231186094
+
+What’s the estimand of interest? This depends on the question we're trying to answer:
+
+1. Participant-average treatment effect
+Question: “What is the average effect of the intervention on an individual patient?”
+Each patient contributes equally.
+
+2. Cluster-average treatment effect
+Question: “What is the average effect of the intervention per facility?”
+Each facility contributes equally.
+
+See examples from publications: 
+(1) "For instance, if hospitals act as the cluster and the outcome relates to individual participants (e.g. a hospital-level intervention aiming to reduce mortality in presenting patients), then the participant-average treatment effect will be of most interest, as this represents the population impact of switching from the control to intervention."
+(2)"In a trial aiming to reduce unnecessary prescribing of antibiotics, in which doctors act as the cluster and outcomes are measured on each participant they treat, then a cluster-average treatment effect may also be of interest, as this provides the intervention’s effect on the clinician’s prescribing habits."
+(3) "Consider a trial comparing a quality improvement (QI) intervention to improve outcomes in patients undergoing emergency laparotomy. This intervention involves local QI leads implementing a hospital-wide improvement programme at each cluster. The primary outcome is overall mortality within 90 days and a secondary outcome is whether a senior surgeon is present in the operating theatre (either performing the surgery or supervising a more junior surgeon in doing so). 
+For the primary outcome, the interest clearly lies in the intervention effect on individual patients (i.e. how many additional lives can be saved through the QI intervention?). Thus, a participant-average treatment effect is most relevant here.
+However, the key secondary outcome (whether a senior surgeon is present) is intended to measure treatment success at the cluster level (i.e. whether the intervention was effective in making hospitals change their practice around emergency laparotomies). Hence, for this outcome, a cluster-average estimand may be the most relevant. We note that for the secondary outcome (whether a senior surgeon is present), both a participant-average and cluster-average treatment effect may be of scientific interest, in which case both could be specified (e.g. with the cluster-average treatment effect designated as the primary). However, including both estimands should only be done if both are indeed of scientific interest."
+"In this trial, it is plausible that success in implementing the QI intervention may differ between smaller and larger clusters due to differing resource levels available, resulting in an interaction between treatment effect and cluster size."
+
+A cluster-level analysis involves calculating a summary measure for each cluster (e.g. the mean outcome across participants in that cluster) and then comparing cluster-level summaries. 
+An individual-level analysis typically involves analysing participant-level outcomes using a regression model that accounts for correlations between participants from the same cluster.
+
+However, we can also re-weight a cluster-level analysis to give each participant equal weight to target a participant-average treatment effect, by weighting each individual by the inverse number of participants in that cluster.
+Similarly, we can re-weight individual-level analyses to give equal weight to each cluster to target a cluster-average treatment effect, by weighting each cluster by the number of participants within that cluster.
+
+Another issue in CRTs is that certain commonly used estimators can be biased when the cluster size is informative. Esp. when using the commonly used mixed-effects models with a random intercept for cluster, but also the generalized estimating equations (GEEs) with an exchangeable working correlation structure as used often in CRTs. Because they do not give equal weight to each participant. Instead, clusters are weighted by their inverse-variance, which is a function of both the cluster size and the ICC. 
+
+Solution: IEE = independence estimating equation. Will be unbiased for the participant-average treatment effect, even if cluster size is informative.
+IEEs employ an independence working correlation structure in conjunction with robust standard errors to account for clustering.
+
+IEE can be easily implemented in R by using GEEs with a working independence assumption and robust standard errors or by using a standard regression model estimated by maximum likelihood/least squares with cluster-robust standard errors. 
+However, IEEs can be less efficient than mixed-effects models or GEEs with an exchangeable working correlation structure, so the latter could be used if there is a strong reason a priori to believe that the cluster size will not be informative.
+
+#### Let's investigate the participant-average treatment effect first (using participant-level data only)
+See formula and R code in publication
+
+```r
+# (1) mixed-effects, glmer
+model_glmer <- glmer(y1 ~ rx + (1 | site), 
+                     data = df_crt_b, 
+                     family = binomial)
+model_glmer_adj <- glmer(y1 ~ rx + y0 + (1 | site), 
+                     data = df_crt_b, 
+                     family = binomial)
+
+# (2) GEE
+model_gee <- geeglm(y1 ~ rx, id = site, 
+                         data = df_crt_b, 
+                         family = binomial(link = "logit"), 
+                         corstr = "exchangeable")
+model_gee_adj <- geeglm(y1 ~ rx + y0, id = site, 
+                         data = df_crt_b, 
+                         family = binomial(link = "logit"), 
+                         corstr = "exchangeable")
+
+# (3) IEE -> different to all above, robust to informative cluster size- but if not CV, then also no ICS => not needed
+model_iee <- geeglm(y1 ~ rx, id = site, 
+                    data = df_crt_b, 
+                    family = binomial(link = "logit"), # can we also use "log" to directly get RR instead of OR?
+                    corstr = "independence")
+model_iee_adj <- geeglm(y1 ~ rx + y0, id = site, 
+                    data = df_crt_b, 
+                    family = binomial(link = "logit"),
+                    corstr = "independence")
+
+## Extract estimates from all models and compare across
+# Mixed-effects model using Wald
+wald <- summary(model_glmer)$coefficients
+wald_est <- wald["rx1", "Estimate"]
+wald_se <- wald["rx1", "Std. Error"]
+wald_pval <- wald["rx1", "Pr(>|z|)"]
+wald_lower <- wald_est - 1.96 * wald_se
+wald_upper <- wald_est + 1.96 * wald_se
+wald_adj <- summary(model_glmer_adj)$coefficients
+wald_est_adj <- wald_adj["rx1", "Estimate"]
+wald_se_adj <- wald_adj["rx1", "Std. Error"]
+wald_pval_adj <- wald_adj["rx1", "Pr(>|z|)"]
+wald_lower_adj <- wald_est_adj - 1.96 * wald_se_adj
+wald_upper_adj <- wald_est_adj + 1.96 * wald_se_adj
+
+# GEE with an exchangeable working correlation structure 
+gee_est <- summary(model_gee)$coefficients["rx1", "Estimate"]
+gee_se <- summary(model_gee)$coefficients["rx1", "Std.err"]
+gee_pval <- summary(model_gee)$coefficients["rx1", "Pr(>|W|)"]
+gee_lower <- gee_est - 1.96 * gee_se
+gee_upper <- gee_est + 1.96 * gee_se
+gee_est_adj <- summary(model_gee_adj)$coefficients["rx1", "Estimate"]
+gee_se_adj <- summary(model_gee_adj)$coefficients["rx1", "Std.err"]
+gee_pval_adj <- summary(model_gee_adj)$coefficients["rx1", "Pr(>|W|)"]
+gee_lower_adj <- gee_est_adj - 1.96 * gee_se_adj
+gee_upper_adj <- gee_est_adj + 1.96 * gee_se_adj
+
+# IEE with cluster-robust SEs
+iee_est <- summary(model_iee)$coefficients["rx1", "Estimate"]
+iee_se <- summary(model_iee)$coefficients["rx1", "Std.err"]
+iee_pval <- summary(model_iee)$coefficients["rx1", "Pr(>|W|)"]
+iee_lower <- iee_est - 1.96 * iee_se
+iee_upper <- iee_est + 1.96 * iee_se
+iee_est_adj <- summary(model_iee_adj)$coefficients["rx1", "Estimate"]
+iee_se_adj <- summary(model_iee_adj)$coefficients["rx1", "Std.err"]
+iee_pval_adj <- summary(model_iee_adj)$coefficients["rx1", "Pr(>|W|)"]
+iee_lower_adj <- iee_est_adj - 1.96 * iee_se_adj
+iee_upper_adj <- iee_est_adj + 1.96 * iee_se_adj
+
+# Combine
+results_table <- tibble(
+  Method = c("Mixed-effect Wald (model-based)", "Mixed-effect Wald (model-based), adj", "GEE with exch. corr.", 
+             "GEE with exch. corr., adj.", "IEE with robust SE", "IEE with robust SE, adj"),
+  Estimate = round(c(wald_est, wald_est_adj, gee_est, gee_est_adj, iee_est, iee_est_adj), 3),
+  OR = round(exp(c(wald_est, wald_est_adj, gee_est, gee_est_adj, iee_est, iee_est_adj)), 2),
+  CI_Lower = round(exp(c(wald_lower, wald_lower_adj, gee_lower, gee_lower_adj, iee_lower, iee_lower_adj)), 2),
+  CI_Upper = round(exp(c(wald_upper, wald_upper_adj, gee_upper, gee_upper_adj, iee_upper, iee_upper_adj)), 2),
+  p_value = c(wald_pval, wald_pval_adj, gee_pval, gee_pval_adj, iee_pval, iee_pval_adj)
+) %>%
+  mutate(
+    p_value = ifelse(p_value < 0.001, "<0.001", sprintf("%.3f", p_value))
+  )
+
+# Display
+results_table %>%
+  kable("pipe", col.names = c("Method", "Estimate (log-odds)", "Odds Ratio", "95% CI Lower", "95% CI Upper", "p-value")) %>%
+  kable_styling(full_width = FALSE)
+```
+
+```
+## Warning in kable_styling(., full_width = FALSE): Please specify format in
+## kable. kableExtra can customize either HTML or LaTeX outputs. See
+## https://haozhu233.github.io/kableExtra/ for details.
+```
 
 
+
+|Method                               | Estimate (log-odds)| Odds Ratio| 95% CI Lower| 95% CI Upper|p-value |
+|:------------------------------------|-------------------:|----------:|------------:|------------:|:-------|
+|Mixed-effect Wald (model-based)      |              -1.036|       0.35|         0.20|         0.64|<0.001  |
+|Mixed-effect Wald (model-based), adj |              -1.006|       0.37|         0.23|         0.59|<0.001  |
+|GEE with exch. corr.                 |              -0.929|       0.40|         0.23|         0.69|0.001   |
+|GEE with exch. corr., adj.           |              -0.919|       0.40|         0.25|         0.62|<0.001  |
+|IEE with robust SE                   |              -0.929|       0.40|         0.23|         0.69|0.001   |
+|IEE with robust SE, adj              |              -0.923|       0.40|         0.26|         0.62|<0.001  |
+
+#### Let's investigate the cluster-average treatment effect (using participant-level data)
+Weighted IEE on participant-level data using robust standard errors, with inverse cluster-size weights equal to 1/n_i to give equal weight to each cluster. Think about simpler cluster ATEs in a second step...
+
+```r
+# Calculate cluster sizes
+cluster_sizes <- table(df_crt_b$site)
+df_crt_b$cluster_size <- cluster_sizes[as.character(dd_sim$site)]
+df_crt_b$inv_cluster_size <- 1 / df_crt_b$cluster_size
+
+# Similar to IEE for individual ATE, but re-weight for cluster size, using inverse cluster-size weights
+model_cluster_iee <- geeglm(y1 ~ rx, id = site, 
+                    data = df_crt_b, 
+                    weights = inv_cluster_size,
+                    family = binomial(link = "logit"),
+                    corstr = "independence")
+```
+
+```
+## Warning in eval(family$initialize): non-integer #successes in a binomial glm!
+```
+
+```r
+model_cluster_iee_adj <- geeglm(y1 ~ rx + y0, id = site, 
+                    data = df_crt_b, 
+                    weights = inv_cluster_size,
+                    family = binomial(link = "logit"),
+                    corstr = "independence")
+```
+
+```
+## Warning in eval(family$initialize): non-integer #successes in a binomial glm!
+```
+
+```r
+## Extract estimates from all models and compare across
+# IEE for cluster level
+c_iee_est <- summary(model_cluster_iee)$coefficients["rx1", "Estimate"]
+c_iee_se <- summary(model_cluster_iee)$coefficients["rx1", "Std.err"]
+c_iee_pval <- summary(model_cluster_iee)$coefficients["rx1", "Pr(>|W|)"]
+c_iee_lower <- c_iee_est - 1.96 * c_iee_se
+c_iee_upper <- c_iee_est + 1.96 * c_iee_se
+c_iee_est_adj <- summary(model_cluster_iee_adj)$coefficients["rx1", "Estimate"]
+c_iee_se_adj <- summary(model_cluster_iee_adj)$coefficients["rx1", "Std.err"]
+c_iee_pval_adj <- summary(model_cluster_iee_adj)$coefficients["rx1", "Pr(>|W|)"]
+c_iee_lower_adj <- c_iee_est_adj - 1.96 * c_iee_se_adj
+c_iee_upper_adj <- c_iee_est_adj + 1.96 * c_iee_se_adj
+
+# Combine
+results_table <- tibble(
+  Method = c("CLuster-weighted IEE with robust SE", "CLuster-weighted IEE with robust SE, adj"),
+  Estimate = round(c(c_iee_est, c_iee_est_adj), 3),
+  OR = round(exp(c(c_iee_est, c_iee_est_adj)), 2),
+  CI_Lower = round(exp(c(c_iee_lower, c_iee_lower_adj)), 2),
+  CI_Upper = round(exp(c(c_iee_upper, c_iee_upper_adj)), 2),
+  p_value = c(c_iee_pval, c_iee_pval_adj)
+) %>%
+  mutate(
+    p_value = ifelse(p_value < 0.001, "<0.001", sprintf("%.3f", p_value))
+  )
+
+# Display
+results_table %>%
+  kable("pipe", col.names = c("Method", "Estimate (log-odds)", "Odds Ratio", "95% CI Lower", "95% CI Upper", "p-value")) %>%
+  kable_styling(full_width = FALSE)
+```
+
+```
+## Warning in kable_styling(., full_width = FALSE): Please specify format in
+## kable. kableExtra can customize either HTML or LaTeX outputs. See
+## https://haozhu233.github.io/kableExtra/ for details.
+```
+
+
+
+|Method                                   | Estimate (log-odds)| Odds Ratio| 95% CI Lower| 95% CI Upper|p-value |
+|:----------------------------------------|-------------------:|----------:|------------:|------------:|:-------|
+|CLuster-weighted IEE with robust SE      |              -0.929|        0.4|         0.23|         0.69|0.001   |
+|CLuster-weighted IEE with robust SE, adj |              -0.923|        0.4|         0.26|         0.62|<0.001  |
+
+=> No difference between cluster ATE and individual ATE suggests no informative cluster size: "If there is no informative cluster size, the participant-average and cluster-average effects will coincide and mixed-effects models target this common treatment effect." -> since my simulated data does not include CV there can be no ICS - correct.
 
 
